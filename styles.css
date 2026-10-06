@@ -1,5 +1,6 @@
 /* ===================================================================
-   Removedor de Fondos con IA JPB — Estilos
+   Removedor de Fondos con IA JPB — Estilos (v15)
+   Incluye optimizaciones GPU para Android vía clase .low-gpu en <html>
    =================================================================== */
 
 /* ====== VARIABLES ====== */
@@ -59,7 +60,6 @@ body {
   touch-action: none;
 }
 
-/* Iconos: invertir en tema oscuro */
 [data-theme="dark"] .icon-btn img,
 [data-theme="dark"] .btn-icon,
 [data-theme="dark"] .section-icon,
@@ -801,7 +801,7 @@ input[type="color"] {
   top: 0;
   left: 0;
   transform-origin: 0 0;
-  will-change: transform;
+  /* will-change: transform  — movido a .low-gpu para Android */
 }
 .canvas-inner canvas {
   position: absolute;
@@ -816,6 +816,7 @@ input[type="color"] {
 #overlayCanvas {
   pointer-events: none;
   position: absolute;
+  /* Si el JS le pone width/height explícitos, se escala por CSS */
 }
 
 .brush-cursor {
@@ -824,10 +825,13 @@ input[type="color"] {
   border-radius: 50%;
   pointer-events: none;
   transform: translate(-50%, -50%);
-  box-shadow: 0 0 0 1px rgba(0,0,0,.8), inset 0 0 0 1px rgba(0,0,0,.6);
+  box-shadow:
+    0 0 0 1px rgba(0,0,0,.85),
+    inset 0 0 0 1px rgba(0,0,0,.6),
+    inset 0 0 0 3px rgba(255,255,255,.85);
   display: none;
   z-index: 50;
-  mix-blend-mode: difference;
+  /* mix-blend-mode: difference  — quitado para Android en .low-gpu */
 }
 .brush-cursor.show {
   display: block;
@@ -1007,7 +1011,6 @@ input[type="color"] {
   pointer-events: none;
   opacity: .55;
   transition: opacity .15s, filter .15s;
-  /* Tinte gris suave para inactivos */
   filter: brightness(0) saturate(100%) invert(45%) sepia(0%) saturate(0%) hue-rotate(0deg);
 }
 [data-theme="dark"] .help-tab .tab-icon {
@@ -1025,7 +1028,6 @@ input[type="color"] {
   border-bottom-color: var(--primary);
 }
 .help-tab.active .tab-icon {
-  /* Tinte índigo para activo */
   filter: brightness(0) saturate(100%) invert(30%) sepia(80%) saturate(2500%) hue-rotate(235deg);
   opacity: 1;
 }
@@ -1074,9 +1076,38 @@ input[type="color"] {
   font-size: 12px;
 }
 
+/* ===================================================================
+   OPTIMIZACIONES GPU PARA ANDROID (.low-gpu en <html>)
+   =================================================================== */
+.low-gpu .brush-cursor {
+  /* Quitar mix-blend-mode: difference (evita capa GPU costosa) */
+  mix-blend-mode: normal;
+  /* Anillo dual: borde blanco + borde negro + relleno suave para visibilidad */
+  border: 2px solid #ffffff;
+  box-shadow:
+    0 0 0 1px rgba(0,0,0,.9),
+    inset 0 0 0 1px rgba(0,0,0,.7);
+}
+
+.low-gpu .canvas-inner {
+  will-change: auto;
+}
+
+.low-gpu #mainCanvas {
+  /* Sin sombra en Android cuando la imagen es muy grande */
+  box-shadow: none;
+}
+
+.low-gpu .app-header,
+.low-gpu .sidebar,
+.low-gpu .floating-toolbar {
+  /* No forzar promoción de capa en Android */
+  transform: none;
+  will-change: auto;
+}
+
 /* ====== RESPONSIVE ====== */
 @media (max-width: 720px) {
-  /* Sidebar como drawer */
   .sidebar {
     position: absolute;
     top: 0;
@@ -1173,7 +1204,6 @@ input[type="color"] {
     height: 30px;
   }
 
-  /* Reducir un poco el sidebar en pantallas muy pequeñas */
   .sidebar {
     width: 260px;
     min-width: 260px;

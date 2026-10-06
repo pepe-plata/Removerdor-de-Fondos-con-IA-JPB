@@ -1,10 +1,29 @@
 // ===================================================================
-//  Removedor de Fondos con IA JPB — PWA (v12)
-//  HTML + CSS + JS puro. Sin frameworks.
+//  Removedor de Fondos con IA JPB — PWA (v13)
+//  Incluye optimizaciones GPU condicionales para Android
 // ===================================================================
 
 (() => {
   'use strict';
+
+  // ===================================================================
+  //  DETECCIÓN DE ENTORNO
+  // ===================================================================
+  const IS_ANDROID = /Android/i.test(navigator.userAgent) ||
+                     (window.__JPB_IS_ANDROID__ === true);
+  const IS_MOBILE_VIEWPORT = window.matchMedia('(max-width: 720px)').matches;
+  const IS_LOW_GPU = IS_ANDROID;   // aplicar optimizaciones GPU solo en Android
+
+  // Umbral para overlay reducido: imágenes > 4 megapíxeles
+  const LARGE_IMAGE_PIXELS = 4 * 1000 * 1000;
+
+  // Escala del overlay cuando la imagen es grande (0.5 = mitad)
+  const OVERLAY_SCALE_LOW = 0.5;
+
+  // Umbral de blur en Android para no reventar la GPU
+  const MAX_BLUR_LOW = 30;
+
+  console.log('[env] Android:', IS_ANDROID, '| LowGPU:', IS_LOW_GPU);
 
   // ===================================================================
   //  SPLASH
@@ -58,31 +77,27 @@
     maskBackup: null,
     copyExif: false,
 
-    // Rect / Lasso
     shapeStart: null,
     shapeCurrent: null,
     lassoPoints: [],
     isDrawingShape: false,
 
-    // Touch
     activePointers: new Map(),
     pinchStart: null,
 
-    // ===== FIX: Delay para el primer toque =====
-    pendingStroke: null,        // { pointerId, timeoutId, startEventData }
-    pendingStrokeDelay: 90,     // ms de margen para detectar 2º dedo
+    pendingStroke: null,
+    pendingStrokeDelay: 90,
 
-    // Undo/Redo
     history: [],
     historyIndex: -1,
     historyMax: 30,
     isPerformingUndoRedo: false,
 
-    // Fill
     fill: { enabled: false, color: '#ffffff', opacity: 100 },
-
-    // Blur (bokeh)
     blur: { enabled: false, amount: 15, darken: 0 },
+
+    // Overlay reducido en Android con imágenes grandes
+    overlayScale: 1,
 
     bgConfig: {
       light: { mode: 'checker', color: '#eef0f5' },
@@ -244,76 +259,35 @@
     return { r: parseInt(m[1], 16), g: parseInt(m[2], 16), b: parseInt(m[3], 16) };
   };
 
-  /**
-   * Detecta si un string parece un ID en lugar de un nombre de archivo real.
-   * Ejemplos de ID: "1000024135", "a3f8b2c1", "IMG_20240115_193045",
-   *                 "image_picker_ABC123", "00000123-0000-...", "PXL_20240115_..."
-   */
   function looksLikeId(name) {
     if (!name) return true;
     const base = name.replace(/\.[^.\/\\]+$/, '');
-
-    // Solo números (10+ dígitos)
     if (/^\d{10,}$/.test(base)) return true;
-
-    // Solo hex/UUID largos
     if (/^[0-9a-f]{8,}$/i.test(base) && /[a-f]/i.test(base)) return true;
-
-    // UUID con guiones
     if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(base)) return true;
-
-    // Patrones de cámara Android: IMG_YYYYMMDD_HHMMSS, PXL_YYYYMMDD_HHMMSS_...
     if (/^(IMG|PXL|VID|MVIMG|Screenshot)_?\d{8,}/i.test(base) && base.length > 20) {
-      // Podría ser válido, pero a veces el picker añade sufijos largos. Aceptamos si no hay mucho hex.
       if (!/[0-9a-f]{6,}$/i.test(base)) return false;
     }
-
-    // image_picker_<timestamp> o similares
     if (/^(image_picker|file_picker|content-uri|media)[\s_-]?/i.test(base)) return true;
-
-    // Nombres con demasiados números y sin vocales (raro en nombres reales)
     const digits = (base.match(/\d/g) || []).length;
     if (digits / base.length > 0.6 && base.length > 12) return true;
-
     return false;
   }
 
-  /**
-   * Limpia el nombre de archivo.
-   */
   function cleanFileName(name) {
     if (!name) return 'imagen';
     let n = String(name);
-
-    // Quitar extensión
     n = n.replace(/\.[^.\/\\]+$/, '');
-
-    // Quitar patrones [algo] o (algo) al final
     n = n.replace(/\s*[\[\(][^\]\)]{0,64}[\]\)]\s*$/g, '');
-
-    // Quitar patrones de ID al final: _ABC123, -A1B2C3, .UUID, guiones bajos con hex largos
     n = n.replace(/[\s._-]+[0-9a-f]{6,}$/i, '');
-
-    // Quitar sufijos tipo "(1)", "_copy", " - copia", "final", "edit"
     n = n.replace(/[\s._-]+(copy|copia|final|edit|edited|processed|output)$/i, '');
-
-    // Colapsar espacios
     n = n.replace(/\s+/g, ' ').trim();
-
     if (!n) n = 'imagen';
     return n;
   }
 
-  /**
-   * Intenta obtener un nombre "amigable" del archivo.
-   * En Android el picker a veces devuelve un nombre genérico (image_picker_xxx)
-   * o solo un ID numérico. Probamos varias fuentes por orden de fiabilidad.
-   */
   function resolveFileName(file) {
-    // 1. file.name normal
     let candidate = (file.name || '').trim();
-
-    // 2. Si parece ID, intentar con webkitRelativePath
     if (looksLikeId(candidate)) {
       const rel = (file.webkitRelativePath || '').trim();
       if (rel) {
@@ -322,9 +296,6 @@
         if (last && !looksLikeId(last)) candidate = last;
       }
     }
-
-    // 3. Si sigue pareciendo ID, y el file viene con "uri" (algunos pickers lo añaden),
-    //    intentar sacar el nombre del final del path.
     if (looksLikeId(candidate) && file.uri) {
       try {
         const u = String(file.uri);
@@ -336,8 +307,6 @@
         }
       } catch (_) {}
     }
-
-    // 4. Fallback: usar la fecha de modificación como nombre
     if (looksLikeId(candidate)) {
       try {
         const d = new Date(file.lastModified || Date.now());
@@ -347,7 +316,6 @@
         candidate = 'imagen';
       }
     }
-
     return candidate || 'imagen';
   }
 
@@ -666,7 +634,6 @@
 
   async function loadImageFile(file) {
     if (!file || !file.type || !file.type.startsWith('image/')) {
-      // Algunos pickers de Android no rellenan type; intentamos por extensión
       const nameLower = (file && file.name || '').toLowerCase();
       const okExt = /\.(png|jpe?g|webp|bmp|gif)$/i.test(nameLower);
       if (!file || !okExt) {
@@ -675,7 +642,6 @@
       }
     }
 
-    // Resolver nombre amigable
     const resolvedName = resolveFileName(file);
     els.fileName.textContent = resolvedName;
     state.originalFileName = cleanFileName(resolvedName);
@@ -741,14 +707,35 @@
 
   function resizeCanvases() {
     const img = state.originalImage;
+
+    // Configurar mainCanvas a resolución completa
     els.mainCanvas.width = img.width;
     els.mainCanvas.height = img.height;
-    els.overlayCanvas.width = img.width;
-    els.overlayCanvas.height = img.height;
     els.mainCanvas.style.width = img.width + 'px';
     els.mainCanvas.style.height = img.height + 'px';
-    els.overlayCanvas.style.width = img.width + 'px';
-    els.overlayCanvas.style.height = img.height + 'px';
+
+    // Decidir si usamos overlay reducido (solo Android + imágenes grandes)
+    const totalPixels = img.width * img.height;
+    const useHalfOverlay = IS_LOW_GPU && totalPixels > LARGE_IMAGE_PIXELS;
+
+    if (useHalfOverlay) {
+      state.overlayScale = OVERLAY_SCALE_LOW;
+      const ow = Math.round(img.width * OVERLAY_SCALE_LOW);
+      const oh = Math.round(img.height * OVERLAY_SCALE_LOW);
+      els.overlayCanvas.width = ow;
+      els.overlayCanvas.height = oh;
+      // Escalar visualmente al tamaño original con CSS
+      els.overlayCanvas.style.width = img.width + 'px';
+      els.overlayCanvas.style.height = img.height + 'px';
+      console.log('[overlay] Reducido a', ow + 'x' + oh, '| scale:', OVERLAY_SCALE_LOW);
+    } else {
+      state.overlayScale = 1;
+      els.overlayCanvas.width = img.width;
+      els.overlayCanvas.height = img.height;
+      els.overlayCanvas.style.width = img.width + 'px';
+      els.overlayCanvas.style.height = img.height + 'px';
+    }
+
     els.dims.textContent = `${img.width} × ${img.height} px`;
     els.emptyState.hidden = true;
     els.canvasViewport.hidden = false;
@@ -797,39 +784,43 @@
     ctx.clearRect(0, 0, els.mainCanvas.width, els.mainCanvas.height);
     if (src) ctx.drawImage(src, 0, 0);
 
-    overlayCtx.clearRect(0, 0, els.overlayCanvas.width, els.overlayCanvas.height);
+    // Overlay: coordenadas según su tamaño interno (puede estar reducido)
+    const ow = els.overlayCanvas.width;
+    const oh = els.overlayCanvas.height;
+    overlayCtx.clearRect(0, 0, ow, oh);
 
+    // Overlay rosado de la máscara
     if (state.maskEditorActive && state.maskCanvas) {
-      const w = els.overlayCanvas.width;
-      const h = els.overlayCanvas.height;
-      const tmp = createCanvas(w, h);
+      const tmp = createCanvas(ow, oh);
       const tctx = tmp.getContext('2d');
       tctx.fillStyle = 'rgba(255, 105, 180, 0.45)';
-      tctx.fillRect(0, 0, w, h);
+      tctx.fillRect(0, 0, ow, oh);
       tctx.globalCompositeOperation = 'destination-in';
-      tctx.drawImage(state.maskCanvas, 0, 0);
+      tctx.drawImage(state.maskCanvas, 0, 0, ow, oh);
       overlayCtx.drawImage(tmp, 0, 0);
     }
 
+    // Preview rect / lasso (coordenadas de imagen → overlay coords)
     if (state.maskEditorActive && state.isDrawingShape) {
+      const s = state.overlayScale;
       overlayCtx.save();
       overlayCtx.strokeStyle = 'rgba(79, 70, 229, 0.95)';
       overlayCtx.fillStyle = 'rgba(79, 70, 229, 0.20)';
-      overlayCtx.lineWidth = Math.max(1, 2 / state.zoom);
-      overlayCtx.setLineDash([6 / state.zoom, 4 / state.zoom]);
+      overlayCtx.lineWidth = Math.max(1, (2 / state.zoom) * s);
+      overlayCtx.setLineDash([(6 / state.zoom) * s, (4 / state.zoom) * s]);
 
       if (state.activeTool === 'rect' && state.shapeStart && state.shapeCurrent) {
-        const x = Math.min(state.shapeStart.x, state.shapeCurrent.x);
-        const y = Math.min(state.shapeStart.y, state.shapeCurrent.y);
-        const w = Math.abs(state.shapeCurrent.x - state.shapeStart.x);
-        const h = Math.abs(state.shapeCurrent.y - state.shapeStart.y);
+        const x = Math.min(state.shapeStart.x, state.shapeCurrent.x) * s;
+        const y = Math.min(state.shapeStart.y, state.shapeCurrent.y) * s;
+        const w = Math.abs(state.shapeCurrent.x - state.shapeStart.x) * s;
+        const h = Math.abs(state.shapeCurrent.y - state.shapeStart.y) * s;
         overlayCtx.fillRect(x, y, w, h);
         overlayCtx.strokeRect(x, y, w, h);
       } else if (state.activeTool === 'lasso' && state.lassoPoints.length > 1) {
         overlayCtx.beginPath();
-        overlayCtx.moveTo(state.lassoPoints[0].x, state.lassoPoints[0].y);
+        overlayCtx.moveTo(state.lassoPoints[0].x * s, state.lassoPoints[0].y * s);
         for (let i = 1; i < state.lassoPoints.length; i++) {
-          overlayCtx.lineTo(state.lassoPoints[i].x, state.lassoPoints[i].y);
+          overlayCtx.lineTo(state.lassoPoints[i].x * s, state.lassoPoints[i].y * s);
         }
         overlayCtx.closePath();
         overlayCtx.fill();
@@ -839,17 +830,23 @@
     }
   }
 
+  /**
+   * Aplica la máscara a currentCanvas con soporte para fill y blur.
+   * En Android, el blur se hace con downscale+upscale para reducir la carga GPU.
+   */
   function applyMaskToCurrent() {
     if (!state.originalCanvas || !state.maskCanvas) return;
     const w = state.originalCanvas.width;
     const h = state.originalCanvas.height;
 
+    // 1) Recorte (imagen original con alpha de la máscara)
     const cut = createCanvas(w, h);
     const cctx = cut.getContext('2d');
     cctx.drawImage(state.originalCanvas, 0, 0);
     cctx.globalCompositeOperation = 'destination-in';
     cctx.drawImage(state.maskCanvas, 0, 0);
 
+    // 2) Fondo
     const cc = state.currentCanvas.getContext('2d');
     cc.clearRect(0, 0, w, h);
 
@@ -859,9 +856,37 @@
       const bctx = bg.getContext('2d');
 
       if (state.blur.enabled && state.blur.amount > 0) {
-        bctx.filter = `blur(${state.blur.amount}px)`;
-        bctx.drawImage(state.originalCanvas, 0, 0);
-        bctx.filter = 'none';
+        if (IS_LOW_GPU) {
+          // === Optimización Android: downscale + upscale ===
+          // Dibujamos la imagen a 1/4 de tamaño, aplicamos filter: blur() sobre
+          // el canvas pequeño (que es MUCHO más barato en GPU), y luego
+          // escalamos al tamaño final con imageSmoothing de alta calidad.
+          const bw = Math.max(1, Math.round(w / 4));
+          const bh = Math.max(1, Math.round(h / 4));
+
+          const small = createCanvas(bw, bh);
+          const sctx = small.getContext('2d');
+          sctx.imageSmoothingEnabled = true;
+          sctx.imageSmoothingQuality = 'high';
+
+          // El blur se aplica al reducir: usamos el blur proporcional (1/4 del solicitado)
+          const scaledBlur = Math.max(1, state.blur.amount / 4);
+          sctx.filter = `blur(${scaledBlur}px)`;
+          sctx.drawImage(state.originalCanvas, 0, 0, bw, bh);
+          sctx.filter = 'none';
+
+          // Upscale al tamaño final
+          bctx.imageSmoothingEnabled = true;
+          bctx.imageSmoothingQuality = 'high';
+          bctx.drawImage(small, 0, 0, bw, bh, 0, 0, w, h);
+        } else {
+          // Desktop: blur nativo al tamaño completo
+          bctx.filter = `blur(${state.blur.amount}px)`;
+          bctx.drawImage(state.originalCanvas, 0, 0);
+          bctx.filter = 'none';
+        }
+
+        // Oscurecer fondo
         if (state.blur.darken > 0) {
           bctx.fillStyle = `rgba(0,0,0,${state.blur.darken / 100})`;
           bctx.fillRect(0, 0, w, h);
@@ -872,8 +897,11 @@
         bctx.fillStyle = `rgba(${rgb.r}, ${rgb.g}, ${rgb.b}, ${alpha})`;
         bctx.fillRect(0, 0, w, h);
       }
+
       cc.drawImage(bg, 0, 0);
     }
+
+    // 3) Sujeto encima
     cc.drawImage(cut, 0, 0);
 
     state.hasProcessed = true;
@@ -975,56 +1003,30 @@
   }, { passive: false });
 
   // ===================================================================
-  //  FIX #1: MANEJO DE POINTERS CON DELAY PARA 1er DEDO
+  //  POINTERS (con delay para Android)
   // ===================================================================
-  // Problema: al pinchar con 2 dedos para hacer zoom en Android, el 1er dedo
-  // dispara pointerdown y empieza a pintar antes de que el 2º dedo toque.
-  // Solución:
-  //  - Al recibir 1er pointerdown en modo touch con herramienta activa,
-  //    NO pintamos inmediatamente. Guardamos pendingStroke con un timeout.
-  //  - Si en pendingStrokeDelay ms entra un 2º dedo → cancelamos el pending.
-  //  - Si el timeout expira y sigue siendo 1 dedo → ejecutamos el stroke.
-  //  - Si mientras tanto el usuario mueve el dedo más de N px, se cancela
-  //    el delay y arrancamos el trazo (para dar sensación responsiva).
-
   function cancelPendingStroke() {
     if (state.pendingStroke) {
       clearTimeout(state.pendingStroke.timeoutId);
       state.pendingStroke = null;
     }
   }
-
   function executePendingStroke(pending, e) {
     cancelPendingStroke();
     if (!pending) return;
-
     const tool = pending.tool;
     const ev = pending.lastEvent || e;
-
-    if (tool === 'wand') {
-      doMagicWand(ev);
-    } else if (tool === 'rect') {
-      state.isDrawingShape = true;
-      state.shapeStart = eventToImageCoords(ev);
-      state.shapeCurrent = { ...state.shapeStart };
-      render();
-    } else if (tool === 'lasso') {
-      state.isDrawingShape = true;
-      state.lassoPoints = [eventToImageCoords(ev)];
-      render();
-    } else {
-      // brush
-      startBrushStroke(ev);
-    }
+    if (tool === 'wand') doMagicWand(ev);
+    else if (tool === 'rect') { state.isDrawingShape = true; state.shapeStart = eventToImageCoords(ev); state.shapeCurrent = { ...state.shapeStart }; render(); }
+    else if (tool === 'lasso') { state.isDrawingShape = true; state.lassoPoints = [eventToImageCoords(ev)]; render(); }
+    else startBrushStroke(ev);
   }
 
   els.canvasArea.addEventListener('pointerdown', (e) => {
     if (!state.originalImage) return;
     state.activePointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
 
-    // === 2 dedos: pinch, cancelar cualquier pending o trazo ===
     if (state.activePointers.size === 2) {
-      // Cancelar pending stroke (dedo 1 no debe pintar)
       cancelPendingStroke();
       state.isDrawing = false;
       state.lastBrushPoint = null;
@@ -1033,12 +1035,6 @@
       state.shapeCurrent = null;
       state.lassoPoints = [];
       state.isPanning = false;
-
-      // Si había un trazo iniciado con delay que aún no se había ejecutado,
-      // simplemente se descarta. No hay nada que revertir porque no pintó.
-      // Si ya se había ejecutado un stroke con delay (ya pintó unos píxeles),
-      // también lo dejamos, no merece la pena revertir 1-2 píxeles.
-
       startPinch();
       try { els.canvasArea.setPointerCapture(e.pointerId); } catch (_) {}
       e.preventDefault();
@@ -1068,9 +1064,7 @@
     if (!isTouch && e.button !== 0) return;
     if (pickingColor) { pickColorFromImage(e); return; }
 
-    // === FIX: en TOUCH con herramienta activa, diferimos la acción ===
     if (editingMask && isTouch) {
-      // Guardar datos y esperar a ver si entra un 2º dedo
       const pending = {
         pointerId: e.pointerId,
         tool: state.activeTool,
@@ -1080,18 +1074,15 @@
         timeoutId: null
       };
       pending.timeoutId = setTimeout(() => {
-        // Si seguimos con 1 solo dedo, ejecutar
         if (state.activePointers.size === 1 && state.pendingStroke === pending) {
           executePendingStroke(pending, pending.lastEvent);
         }
       }, state.pendingStrokeDelay);
-
       state.pendingStroke = pending;
       e.preventDefault();
       return;
     }
 
-    // === Ratón o touch con pan: comportamiento inmediato ===
     if (editingMask) {
       if (state.activeTool === 'wand') doMagicWand(e);
       else if (state.activeTool === 'rect') startRect(e);
@@ -1105,19 +1096,14 @@
     if (state.activePointers.has(e.pointerId)) {
       state.activePointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
     }
-
-    // Pinch activo
     if (state.activePointers.size >= 2 && state.pinchStart) { updatePinch(); return; }
 
-    // Si hay pendingStroke (delay), evaluar si el dedo se movió lo suficiente
-    // como para arrancar el trazo sin esperar al timeout
     if (state.pendingStroke && state.pendingStroke.pointerId === e.pointerId) {
       state.pendingStroke.lastEvent = e;
       const dx = e.clientX - state.pendingStroke.startClientX;
       const dy = e.clientY - state.pendingStroke.startClientY;
       const dist = Math.hypot(dx, dy);
       if (dist > 8) {
-        // El usuario ya está moviendo → arrancar el trazo ya
         const p = state.pendingStroke;
         cancelPendingStroke();
         executePendingStroke(p, e);
@@ -1126,7 +1112,6 @@
     }
 
     updateCursor(e);
-
     if (state.isPanning) {
       const dx = e.clientX - state.lastPointer.x;
       const dy = e.clientY - state.lastPointer.y;
@@ -1141,18 +1126,12 @@
 
   function endPointer(e) {
     state.activePointers.delete(e.pointerId);
-
-    // Cancelar pending si aún está activo y suelto el dedo antes del timeout
     if (state.pendingStroke && state.pendingStroke.pointerId === e.pointerId) {
-      // Si es un tap rápido, ejecutamos la acción (pincel suelto, wand, etc.)
       const p = state.pendingStroke;
       cancelPendingStroke();
-      // Ejecutar al soltar si fue un tap rápido sin movimiento
       executePendingStroke(p, e);
     }
-
     if (state.pinchStart && state.activePointers.size < 2) state.pinchStart = null;
-
     if (state.isPanning && state.activePointers.size === 0) {
       state.isPanning = false;
       els.canvasArea.classList.remove('panning');
@@ -1273,7 +1252,6 @@
     els.toolGroup.querySelectorAll('.tool-btn').forEach(b => b.classList.remove('active'));
     btn.classList.add('active');
     state.activeTool = btn.dataset.tool;
-
     if (state.activeTool === 'brush') {
       els.brushSizeField.style.display = '';
       els.smartOpts.classList.add('hidden');
@@ -1306,12 +1284,10 @@
     paintBrushAt(e);
   }
   function continueBrushStroke(e) { paintBrushAt(e); }
-
   function paintBrushAt(e) {
     const { x, y } = eventToImageCoords(e);
     const mctx = state.maskCanvas.getContext('2d');
     const r = state.brushSize / 2;
-
     if (state.brushMode === 'add') {
       mctx.globalCompositeOperation = 'source-over';
       mctx.strokeStyle = '#ffffff';
@@ -1324,7 +1300,6 @@
     mctx.lineWidth = state.brushSize;
     mctx.lineCap = 'round';
     mctx.lineJoin = 'round';
-
     if (state.lastBrushPoint) {
       mctx.beginPath();
       mctx.moveTo(state.lastBrushPoint.x, state.lastBrushPoint.y);
@@ -1341,12 +1316,17 @@
   }
 
   // ===================================================================
-  //  RECT
+  //  RECT / LASSO
   // ===================================================================
   function startRect(e) {
     state.isDrawingShape = true;
     state.shapeStart = eventToImageCoords(e);
     state.shapeCurrent = { ...state.shapeStart };
+    render();
+  }
+  function startLasso(e) {
+    state.isDrawingShape = true;
+    state.lassoPoints = [eventToImageCoords(e)];
     render();
   }
   function continueShape(e) {
@@ -1362,18 +1342,11 @@
       }
     }
   }
-  function startLasso(e) {
-    state.isDrawingShape = true;
-    state.lassoPoints = [eventToImageCoords(e)];
-    render();
-  }
   function finishShape(e) {
     if (!state.isDrawingShape) return;
     state.isDrawingShape = false;
-
     const mctx = state.maskCanvas.getContext('2d');
     const isAdd = state.brushMode === 'add';
-
     if (state.activeTool === 'rect' && state.shapeStart && state.shapeCurrent) {
       const x = Math.min(state.shapeStart.x, state.shapeCurrent.x);
       const y = Math.min(state.shapeStart.y, state.shapeCurrent.y);
@@ -1890,7 +1863,6 @@
           if (modelBuffer) fromCache = true;
         }
       } catch (e) { console.warn('No se pudo leer caché:', e); }
-
       if (!modelBuffer) {
         const urls = MODEL_SOURCES[modelKey];
         if (!urls || !urls.length) throw new Error('Modelo desconocido: ' + modelKey);
@@ -1991,7 +1963,6 @@
   document.addEventListener('keydown', (e) => {
     const isInput = ['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement.tagName);
     if (isInput && !e.ctrlKey && !e.metaKey) return;
-
     if (e.code === 'Space' && !isInput) {
       state.spacePressed = true;
       els.canvasArea.style.cursor = 'grab';

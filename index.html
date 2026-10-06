@@ -7,6 +7,19 @@
 <title>Removedor de Fondos con IA JPB</title>
 <link rel="manifest" href="manifest.json" />
 <link rel="stylesheet" href="styles.css" />
+
+<!-- Detección temprana de Android para aplicar optimizaciones GPU antes del primer pintado -->
+<script>
+  (function () {
+    try {
+      var isAndroid = /Android/i.test(navigator.userAgent);
+      window.__JPB_IS_ANDROID__ = isAndroid;
+      if (isAndroid) {
+        document.documentElement.classList.add('low-gpu');
+      }
+    } catch (_) {}
+  })();
+</script>
 </head>
 <body>
 
@@ -100,7 +113,6 @@
       <div id="processStatus" class="status">Listo</div>
     </div>
 
-    <!-- MASK EDITOR -->
     <div class="panel-section">
       <label class="check-field title-check">
         <input type="checkbox" id="maskEditorToggle" />
@@ -108,7 +120,6 @@
         <span>Editor de Máscara</span>
       </label>
       <div id="maskEditorBody" class="editor-body disabled">
-
         <div class="tool-grid" id="toolGroup">
           <button class="tool-btn active" data-tool="brush" title="Pincel">
             <img src="icons/maskedit.png" alt="" class="tool-icon" />
@@ -172,7 +183,6 @@
       </div>
     </div>
 
-    <!-- COLOR REMOVAL -->
     <div class="panel-section collapsible" data-section="color">
       <h2 class="section-title">
         <span class="icon-title">
@@ -215,7 +225,6 @@
       </div>
     </div>
 
-    <!-- FILL BACKGROUND -->
     <div class="panel-section collapsible" data-section="fill">
       <h2 class="section-title">
         <span class="icon-title">
@@ -272,7 +281,6 @@
       </div>
     </div>
 
-    <!-- BACKGROUND BLUR -->
     <div class="panel-section collapsible" data-section="blur">
       <h2 class="section-title">
         <span class="icon-title">
@@ -312,7 +320,6 @@
       </div>
     </div>
 
-    <!-- CANVAS BACKGROUND COLOR -->
     <div class="panel-section collapsible" data-section="bg">
       <h2 class="section-title">
         <span class="icon-title">
@@ -485,17 +492,14 @@
           <li>Selecciona <b>"Añadir a pantalla de inicio"</b> o <b>"Instalar app"</b>.</li>
           <li>Confirma el nombre y pulsa <b>Añadir</b>.</li>
         </ol>
-
         <h4>Compartir desde otras apps</h4>
         <p>Una vez instalada, puedes enviar imágenes desde la Galería, WhatsApp, etc. usando el botón <b>Compartir</b> y eligiendo <b>Removedor JPB</b>.</p>
-
         <h4>Gestos táctiles</h4>
         <ul>
           <li><b>1 dedo:</b> pan (mover la imagen).</li>
           <li><b>2 dedos:</b> pinch-zoom + pan simultáneo.</li>
-          <li><b>Con editor de máscara:</b> 1 dedo dibuja con la herramienta activa; 2 dedos siguen haciendo zoom/pan (el trazo del 1er dedo se cancela automáticamente al detectar el 2º).</li>
+          <li><b>Con editor de máscara:</b> 1 dedo dibuja; 2 dedos siguen haciendo zoom/pan (el trazo del 1er dedo se cancela al detectar el 2º).</li>
         </ul>
-
         <h4>Wake Lock</h4>
         <p>Mientras la IA procesa, la pantalla no se apagará automáticamente.</p>
       </div>
@@ -506,10 +510,8 @@
           <li>Abre esta página en <b>Chrome</b> o <b>Edge</b>.</li>
           <li>Pulsa el icono <b>⊕ Instalar</b> en la barra de direcciones.</li>
         </ol>
-
         <h4>Abrir con la app</h4>
         <p>Con la app instalada, puedes hacer clic derecho en una imagen y elegir <b>Abrir con → Removedor JPB</b> desde el explorador de Windows.</p>
-
         <h4>Uso básico</h4>
         <ol>
           <li>Pulsa <b>Abrir</b> o arrastra una imagen.</li>
@@ -547,7 +549,6 @@
       <div class="help-panel" data-panel="general">
         <h4>¿Cómo funciona?</h4>
         <p>Todo se ejecuta <b>localmente</b> en tu dispositivo usando <b>WebGPU</b> (si está disponible) o <b>WebAssembly</b>. Ninguna imagen se sube a ningún servidor.</p>
-
         <h4>Modelos disponibles</h4>
         <ul>
           <li><b>U²-Netp (4.7 MB):</b> rápido.</li>
@@ -556,7 +557,6 @@
           <li><b>U²-Net Human (176 MB):</b> personas.</li>
           <li><b>ISNet General (179 MB):</b> bordes finos.</li>
         </ul>
-
         <h4>Herramientas del editor de máscara</h4>
         <ul>
           <li><b>Pincel:</b> pinta libremente con tamaño ajustable.</li>
@@ -564,19 +564,15 @@
           <li><b>Lazo:</b> dibuja una forma cerrada a mano alzada.</li>
           <li><b>Varita mágica:</b> clic en una zona de color uniforme para seleccionarla.</li>
         </ul>
-
         <h4>Modos</h4>
         <ul>
           <li><b>Añadir:</b> mantiene la zona en la imagen final.</li>
           <li><b>Quitar:</b> elimina la zona (transparente).</li>
         </ul>
-
         <h4>Desenfoque de fondo (bokeh)</h4>
         <p>Aplica desenfoque gaussiano al fondo. Puedes combinarlo con relleno de color para conseguir efectos de retrato.</p>
-
         <h4>Historial</h4>
         <p>El editor de máscara guarda hasta 30 pasos. Usa <b>Ctrl+Z</b> / <b>Ctrl+Y</b> o los botones flotantes.</p>
-
         <h4>Consejos</h4>
         <ul>
           <li>Empieza con <b>U²-Netp</b> para probar rápido.</li>
