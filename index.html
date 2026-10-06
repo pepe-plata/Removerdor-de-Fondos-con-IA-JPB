@@ -1,0 +1,493 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
+<meta name="theme-color" content="#4f46e5" />
+<title>Removedor de Fondos con IA JPB</title>
+<link rel="manifest" href="manifest.json" />
+<link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+
+<!-- ================= SPLASH ================= -->
+<div id="splash" class="splash">
+  <img src="icons/icon-512.png" alt="BG Remover AI" class="splash-logo" />
+  <h1 class="splash-title">Removedor de Fondos con IA JPB</h1>
+  <p class="splash-sub">Remueve fondos con IA local</p>
+</div>
+
+<!-- ================= HEADER ================= -->
+<header class="app-header">
+  <div class="header-left">
+    <img src="icons/icon-64.png" alt="" class="app-logo" />
+    <span id="fileName" class="file-name">Sin archivo</span>
+  </div>
+  <div class="header-right">
+    <button id="btnHelp" class="icon-btn" title="Ayuda">
+      <img src="icons/help.png" alt="" />
+    </button>
+    <div class="theme-switch" id="themeSwitch" title="Tema">
+      <img src="icons/sun.png" alt="Claro" class="theme-icon" />
+      <img src="icons/night.png" alt="Oscuro" class="theme-icon" />
+      <span class="theme-thumb"></span>
+    </div>
+    <button id="btnToggleView" class="icon-btn" title="Original/Procesado" disabled>
+      <img src="icons/view.png" alt="" />
+    </button>
+    <button id="btnCopy" class="icon-btn" title="Copiar" disabled>
+      <img src="icons/copy.png" alt="" />
+    </button>
+    <button id="btnSave" class="icon-btn" title="Guardar" disabled>
+      <img src="icons/save.png" alt="" />
+    </button>
+    <button id="btnOpen" class="primary-btn" title="Abrir">
+      <img src="icons/open.png" alt="" class="btn-icon" />
+      <span>Abrir</span>
+    </button>
+    <input type="file" id="fileInput" accept="image/*" hidden />
+  </div>
+</header>
+
+<!-- ================= MAIN LAYOUT ================= -->
+<main class="app-main">
+  <!-- SIDEBAR PANEL -->
+  <aside class="sidebar" id="sidebar">
+    <div class="panel-section">
+      <h2 class="icon-title">
+        <img src="icons/aimodel.png" alt="" class="section-icon" />
+        <span>Modelo IA</span>
+      </h2>
+      <label class="field">
+        <span>Modelo</span>
+        <select id="modelSelect">
+          <option value="u2netp">U²-Netp (Ligero · 4.7 MB)</option>
+          <option value="silueta">Silueta (Rápido · 44 MB)</option>
+          <option value="u2net">U²-Net (General · 170 MB)</option>
+          <option value="u2net_human_seg">U²-Net Human (176 MB)</option>
+          <option value="isnet-general-use">ISNet General (179 MB)</option>
+        </select>
+      </label>
+      <button id="btnProcess" class="primary-btn full" disabled>
+        <img src="icons/magic-wand.png" alt="" class="btn-icon" />
+        <span>Remover Fondo</span>
+      </button>
+      <button id="btnManageModels" class="secondary-btn full" style="margin-top:6px;">
+        <span>⚙️ Gestionar modelos</span>
+      </button>
+      <div id="processStatus" class="status">Listo</div>
+    </div>
+
+    <!-- MASK EDITOR -->
+    <div class="panel-section">
+      <label class="check-field title-check">
+        <input type="checkbox" id="maskEditorToggle" />
+        <img src="icons/maskedit.png" alt="" class="section-icon" />
+        <span>Editor de Máscara</span>
+      </label>
+      <div id="maskEditorBody" class="editor-body disabled">
+        <label class="field">
+          <span>Tamaño pincel: <b id="brushSizeVal">15</b> px</span>
+          <input type="range" id="brushSize" min="1" max="100" value="15" />
+        </label>
+
+        <div class="btn-group" id="brushModeGroup">
+          <button class="mode-btn active" data-mode="add">
+            <img src="icons/add.png" alt="" class="btn-icon" />
+            <span>Añadir</span>
+          </button>
+          <button class="mode-btn" data-mode="remove">
+            <img src="icons/remove.png" alt="" class="btn-icon" />
+            <span>Quitar</span>
+          </button>
+        </div>
+
+        <label class="check-field">
+          <input type="checkbox" id="smartSelect" />
+          <img src="icons/magic-wand.png" alt="" class="section-icon" />
+          <span>Varita mágica (clic)</span>
+        </label>
+
+        <div id="smartOpts" class="smart-opts hidden">
+          <label class="field">
+            <span>Color: <b id="smartColorVal">30</b></span>
+            <input type="range" id="smartColor" min="0" max="100" value="30" />
+          </label>
+          <label class="field">
+            <span>Borde: <b id="smartEdgeVal">30</b></span>
+            <input type="range" id="smartEdge" min="0" max="100" value="30" />
+          </label>
+        </div>
+
+        <div class="btn-group">
+          <button id="btnCancelMask" class="secondary-btn">
+            <img src="icons/cancel.png" alt="" class="btn-icon" />
+            <span>Cancelar</span>
+          </button>
+          <button id="btnApplyMask" class="primary-btn">
+            <img src="icons/ok.png" alt="" class="btn-icon" />
+            <span>Aplicar</span>
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- COLOR REMOVAL -->
+    <div class="panel-section collapsible" data-section="color">
+      <h2 class="section-title">
+        <span class="icon-title">
+          <img src="icons/deletecolor.png" alt="" class="section-icon" />
+          <span>Eliminar por Color</span>
+        </span>
+        <span class="chev">▾</span>
+      </h2>
+      <div class="section-body">
+        <label class="field">
+          <span>Color</span>
+          <div class="color-row">
+            <input type="color" id="targetColor" value="#ffffff" />
+            <input type="text" id="targetColorHex" value="#ffffff" class="hex-input" />
+            <button id="btnPickColor" class="icon-btn small" title="Tomar de la imagen">
+              <img src="icons/pickcolor.png" alt="" />
+            </button>
+          </div>
+        </label>
+
+        <label class="field">
+          <span>Tolerancia: <b id="toleranceVal">40</b></span>
+          <input type="range" id="tolerance" min="0" max="500" value="40" />
+        </label>
+
+        <label class="field">
+          <span>Borde: <b id="edgeVal">2</b></span>
+          <input type="range" id="edge" min="0" max="10" value="2" />
+        </label>
+
+        <label class="field">
+          <span>Suavizado: <b id="smoothVal">1</b></span>
+          <input type="range" id="smooth" min="0" max="15" value="1" />
+        </label>
+
+        <button id="btnApplyColor" class="primary-btn full" disabled>
+          <img src="icons/ok.png" alt="" class="btn-icon" />
+          <span>Aplicar eliminación</span>
+        </button>
+      </div>
+    </div>
+
+    <!-- FILL BACKGROUND (nueva sección) -->
+    <div class="panel-section collapsible" data-section="fill">
+      <h2 class="section-title">
+        <span class="icon-title">
+          <img src="icons/paint.png" alt="" class="section-icon" onerror="this.style.display='none'" />
+          <span>Rellenar Fondo</span>
+        </span>
+        <span class="chev">▾</span>
+      </h2>
+      <div class="section-body">
+        <p class="hint">Pinta el fondo transparente con un color sólido.</p>
+
+        <label class="check-field">
+          <input type="checkbox" id="fillEnabled" />
+          <span>Activar relleno de fondo</span>
+        </label>
+
+        <label class="field">
+          <span>Color de relleno</span>
+          <div class="color-row">
+            <input type="color" id="fillColor" value="#ffffff" />
+            <input type="text" id="fillColorHex" value="#ffffff" class="hex-input" />
+            <button id="btnFillPickColor" class="icon-btn small" title="Tomar de la imagen">
+              <img src="icons/pickcolor.png" alt="" />
+            </button>
+          </div>
+        </label>
+
+        <label class="field">
+          <span>Opacidad: <b id="fillOpacityVal">100</b>%</span>
+          <input type="range" id="fillOpacity" min="0" max="100" value="100" />
+        </label>
+
+        <div class="quick-swatches">
+          <button class="swatch-fill" data-color="#ffffff" style="background:#ffffff" title="Blanco"></button>
+          <button class="swatch-fill" data-color="#000000" style="background:#000000" title="Negro"></button>
+          <button class="swatch-fill" data-color="#808080" style="background:#808080" title="Gris"></button>
+          <button class="swatch-fill" data-color="#4f46e5" style="background:#4f46e5" title="Índigo"></button>
+          <button class="swatch-fill" data-color="#10b981" style="background:#10b981" title="Verde"></button>
+          <button class="swatch-fill" data-color="#ef4444" style="background:#ef4444" title="Rojo"></button>
+          <button class="swatch-fill" data-color="#f59e0b" style="background:#f59e0b" title="Ámbar"></button>
+          <button class="swatch-fill" data-color="#ec4899" style="background:#ec4899" title="Rosa"></button>
+        </div>
+
+        <div class="bg-actions">
+          <button id="btnApplyFill" class="primary-btn small-btn" disabled>
+            <img src="icons/ok.png" alt="" class="btn-icon" />
+            <span>Aplicar</span>
+          </button>
+          <button id="btnClearFill" class="secondary-btn small-btn" disabled>
+            <img src="icons/cancel.png" alt="" class="btn-icon" />
+            <span>Quitar</span>
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- CANVAS BACKGROUND COLOR -->
+    <div class="panel-section collapsible" data-section="bg">
+      <h2 class="section-title">
+        <span class="icon-title">
+          <img src="icons/palette.png" alt="" class="section-icon" onerror="this.style.display='none'" />
+          <span>Fondo del Lienzo</span>
+        </span>
+        <span class="chev">▾</span>
+      </h2>
+      <div class="section-body">
+        <p class="hint">Aspecto del área de trabajo (no afecta al guardado).</p>
+
+        <div class="bg-mode-row">
+          <label class="radio-pill">
+            <input type="radio" name="bgMode" value="checker" id="bgModeChecker" />
+            <span>▦ Cuadrícula</span>
+          </label>
+          <label class="radio-pill">
+            <input type="radio" name="bgMode" value="solid" id="bgModeSolid" />
+            <span>■ Sólido</span>
+          </label>
+        </div>
+
+        <label class="field" id="bgSolidField">
+          <span>Color sólido</span>
+          <div class="color-row">
+            <input type="color" id="bgSolidColor" value="#ffffff" />
+            <input type="text" id="bgSolidHex" value="#ffffff" class="hex-input" />
+          </div>
+        </label>
+
+        <div class="quick-swatches">
+          <button class="swatch" data-color="#ffffff" style="background:#ffffff" title="Blanco"></button>
+          <button class="swatch" data-color="#000000" style="background:#000000" title="Negro"></button>
+          <button class="swatch" data-color="#808080" style="background:#808080" title="Gris"></button>
+          <button class="swatch" data-color="#4f46e5" style="background:#4f46e5" title="Índigo"></button>
+          <button class="swatch" data-color="#10b981" style="background:#10b981" title="Verde"></button>
+          <button class="swatch" data-color="#ef4444" style="background:#ef4444" title="Rojo"></button>
+          <button class="swatch" data-color="#f59e0b" style="background:#f59e0b" title="Ámbar"></button>
+          <button class="swatch" data-color="#ec4899" style="background:#ec4899" title="Rosa"></button>
+        </div>
+
+        <div class="bg-actions">
+          <button id="btnBgApplyLight" class="secondary-btn small-btn">Aplicar a Claro</button>
+          <button id="btnBgApplyDark" class="secondary-btn small-btn">Aplicar a Oscuro</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="panel-section">
+      <button id="btnReset" class="secondary-btn full" disabled>
+        <img src="icons/reset.png" alt="" class="btn-icon" />
+        <span>Reiniciar</span>
+      </button>
+    </div>
+  </aside>
+
+  <!-- CANVAS AREA -->
+  <section class="canvas-area" id="canvasArea">
+    <div class="empty-state" id="emptyState">
+      <div class="empty-icon">🖼️</div>
+      <p>Abre una imagen para comenzar</p>
+      <button class="primary-btn" onclick="document.getElementById('fileInput').click()">
+        <img src="icons/open.png" alt="" class="btn-icon" />
+        <span>Seleccionar imagen</span>
+      </button>
+    </div>
+
+    <div class="canvas-viewport" id="canvasViewport" hidden>
+      <div class="canvas-inner" id="canvasInner">
+        <canvas id="mainCanvas"></canvas>
+        <canvas id="overlayCanvas"></canvas>
+      </div>
+    </div>
+
+    <div class="brush-cursor" id="brushCursor"></div>
+  </section>
+</main>
+
+<!-- ================= FOOTER ================= -->
+<footer class="app-footer">
+  <span id="dims">— × — px</span>
+  <span class="sep">|</span>
+  <span>Zoom: <b id="zoomVal">100%</b></span>
+  <span class="sep">|</span>
+  <span id="statusMsg">Listo</span>
+</footer>
+
+<!-- ================= MODAL: CALIDAD JPG + EXIF ================= -->
+<div class="modal-backdrop" id="jpgModal" hidden>
+  <div class="modal">
+    <h3>Calidad JPEG</h3>
+    <p class="modal-desc">Selecciona la calidad de compresión</p>
+    <label class="field">
+      <span>Calidad: <b id="jpgQualityVal">92</b>%</span>
+      <input type="range" id="jpgQuality" min="1" max="100" value="92" />
+    </label>
+    <label class="check-field" style="margin-top:6px;">
+      <input type="checkbox" id="chkExif" />
+      <span>Copiar Metadatos EXIF del original</span>
+    </label>
+    <div class="modal-actions">
+      <button id="jpgCancel" class="secondary-btn">
+        <img src="icons/cancel.png" alt="" class="btn-icon" />
+        <span>Cancelar</span>
+      </button>
+      <button id="jpgConfirm" class="primary-btn">
+        <img src="icons/ok.png" alt="" class="btn-icon" />
+        <span>Guardar</span>
+      </button>
+    </div>
+  </div>
+</div>
+
+<!-- ================= MODAL: GESTIÓN DE MODELOS ================= -->
+<div class="modal-backdrop" id="modelsModal" hidden>
+  <div class="modal">
+    <h3>Modelos descargados</h3>
+    <p class="modal-desc" id="modelsStorage">Calculando...</p>
+    <div id="modelsList" class="models-list"></div>
+    <div class="modal-actions">
+      <button id="modelsClose" class="secondary-btn">Cerrar</button>
+    </div>
+  </div>
+</div>
+
+<!-- ================= MODAL: PROGRESO DE DESCARGA ================= -->
+<div class="modal-backdrop" id="progressModal" hidden>
+  <div class="modal">
+    <h3 id="progressTitle">Descargando modelo...</h3>
+    <div class="progress-track">
+      <div class="progress-bar" id="progressBar"></div>
+    </div>
+    <p class="progress-percent" id="progressPercent">0%</p>
+    <div class="modal-actions">
+      <button id="progressCancel" class="secondary-btn">Cancelar</button>
+    </div>
+  </div>
+</div>
+
+<!-- ================= MODAL: AYUDA ================= -->
+<div class="modal-backdrop" id="helpModal" hidden>
+  <div class="modal modal-help">
+    <h3>❓ Ayuda — Removedor de Fondos con IA JPB</h3>
+
+    <div class="help-tabs">
+      <button class="help-tab active" data-tab="android">📱 Android</button>
+      <button class="help-tab" data-tab="windows">💻 Windows</button>
+      <button class="help-tab" data-tab="general">ℹ️ General</button>
+    </div>
+
+    <div class="help-content">
+      <!-- ANDROID -->
+      <div class="help-panel active" data-panel="android">
+        <h4>Instalar como app</h4>
+        <ol>
+          <li>Abre esta página en <b>Chrome para Android</b>.</li>
+          <li>Pulsa el menú <b>⋮</b> (esquina superior derecha).</li>
+          <li>Selecciona <b>"Añadir a pantalla de inicio"</b> o <b>"Instalar app"</b>.</li>
+          <li>Confirma el nombre y pulsa <b>Añadir</b>.</li>
+          <li>La app aparecerá en tu cajón de aplicaciones y podrás abrirla como cualquier otra.</li>
+        </ol>
+
+        <h4>Uso básico</h4>
+        <ol>
+          <li>Pulsa <b>Abrir</b> y selecciona una imagen.</li>
+          <li>Elige un modelo (recomendado: <b>U²-Netp</b> — 4.7 MB).</li>
+          <li>Pulsa <b>Remover Fondo</b>. La primera vez descargará el modelo (necesita internet).</li>
+          <li>Después funciona <b>offline</b>.</li>
+        </ol>
+
+        <h4>Gestos táctiles</h4>
+        <ul>
+          <li><b>1 dedo:</b> arrastrar = desplazar la imagen.</li>
+          <li><b>2 dedos:</b> pellizcar = zoom.</li>
+          <li><b>Pincel:</b> activa "Editor de Máscara" y dibuja con un dedo.</li>
+        </ul>
+
+        <h4>Guardar</h4>
+        <ul>
+          <li>Pulsa <b>Guardar</b> y elige la carpeta de destino.</li>
+          <li>Formatos: PNG, JPG, WebP, BMP.</li>
+          <li>Con JPG puedes elegir la calidad y copiar los metadatos EXIF del original.</li>
+        </ul>
+      </div>
+
+      <!-- WINDOWS -->
+      <div class="help-panel" data-panel="windows">
+        <h4>Instalar como app</h4>
+        <ol>
+          <li>Abre esta página en <b>Chrome</b> o <b>Edge</b> en Windows.</li>
+          <li>En la barra de direcciones aparecerá un icono <b>⊕ Instalar</b>. Púlsalo.</li>
+          <li>O ve al menú <b>⋮</b> → <b>Instalar BG Remover AI</b>.</li>
+          <li>La app se abrirá en su propia ventana sin barras del navegador.</li>
+        </ol>
+
+        <h4>Uso básico</h4>
+        <ol>
+          <li>Pulsa <b>Abrir</b> o arrastra una imagen a la ventana.</li>
+          <li>También puedes pegar con <b>Ctrl+V</b> desde el portapapeles.</li>
+          <li>Elige modelo y pulsa <b>Remover Fondo</b>.</li>
+        </ol>
+
+        <h4>Atajos de teclado</h4>
+        <ul>
+          <li><b>Rueda del ratón:</b> zoom hacia el cursor.</li>
+          <li><b>SHIFT + rueda:</b> desplazar horizontalmente.</li>
+          <li><b>ALT + rueda:</b> desplazar verticalmente.</li>
+          <li><b>Botón medio / derecho (arrastrar):</b> desplazar.</li>
+          <li><b>Barra espaciadora + arrastrar:</b> desplazar.</li>
+          <li><b>Ctrl+V:</b> pegar imagen del portapapeles.</li>
+        </ul>
+
+        <h4>Guardar</h4>
+        <ul>
+          <li>Pulsa <b>Guardar</b>, elige carpeta y formato.</li>
+          <li>Formatos soportados: PNG, JPG, WebP, BMP.</li>
+          <li>Con JPG puedes ajustar la calidad y conservar los metadatos EXIF originales.</li>
+        </ul>
+      </div>
+
+      <!-- GENERAL -->
+      <div class="help-panel" data-panel="general">
+        <h4>¿Cómo funciona?</h4>
+        <p>BG Remover AI usa modelos <b>ONNX</b> que se ejecutan <b>localmente</b> en tu dispositivo. Ninguna imagen se sube a ningún servidor.</p>
+
+        <h4>Modelos disponibles</h4>
+        <ul>
+          <li><b>U²-Netp (4.7 MB):</b> rápido, ideal para empezar.</li>
+          <li><b>Silueta (44 MB):</b> buen balance tamaño/calidad.</li>
+          <li><b>U²-Net (170 MB):</b> calidad general alta.</li>
+          <li><b>U²-Net Human (176 MB):</b> especializado en personas.</li>
+          <li><b>ISNet General (179 MB):</b> máxima calidad de bordes.</li>
+        </ul>
+
+        <h4>Almacenamiento</h4>
+        <p>Los modelos se guardan en tu navegador (IndexedDB). Puedes gestionarlos desde <b>⚙️ Gestionar modelos</b> y borrarlos si necesitas espacio.</p>
+
+        <h4>Consejos</h4>
+        <ul>
+          <li>Empieza con <b>U²-Netp</b> para probar rápido.</li>
+          <li>Usa <b>U²-Net Human</b> para retratos.</li>
+          <li>Para bordes complejos (pelo, encaje) usa <b>ISNet</b>.</li>
+          <li>Usa el <b>Editor de Máscara</b> para retoques finos.</li>
+          <li>La <b>Varita mágica</b> es ideal para fondos de color uniforme.</li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="modal-actions">
+      <button id="helpClose" class="primary-btn">Entendido</button>
+    </div>
+  </div>
+</div>
+
+<script src="db.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
