@@ -2112,17 +2112,34 @@
     console.log('[ModelDB] Persistencia:', granted ? 'concedida' : 'no concedida');
   });
 
+    // ===================================================================
+  //  BACKEND DE IA
+  //  Forzamos WASM (CPU) en Android para evitar contención con el compositor
+  //  de Chrome. En escritorio seguimos usando WebGPU si está disponible.
+  // ===================================================================
   (async () => {
+    if (IS_ANDROID) {
+      console.log('[backend] Android detectado → usando WASM (CPU) para IA');
+      worker.postMessage({ type: 'force-wasm' });
+      return;
+    }
     try {
       if (navigator.gpu) {
         const adapter = await navigator.gpu.requestAdapter();
         if (adapter) {
           worker.postMessage({ type: 'enable-webgpu' });
           console.log('[WebGPU] Adaptador disponible');
+        } else {
+          console.log('[backend] Sin adaptador WebGPU → usando WASM');
         }
+      } else {
+        console.log('[backend] WebGPU no soportado → usando WASM');
       }
-    } catch (e) { console.warn('WebGPU no disponible:', e); }
+    } catch (e) {
+      console.warn('[backend] WebGPU no disponible:', e);
+    }
   })();
+  
 
   updateUI();
   updateFillUI();

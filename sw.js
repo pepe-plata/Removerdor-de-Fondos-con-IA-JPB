@@ -5,7 +5,7 @@
 //  - No cachea modelos .onnx (se guardan en IndexedDB)
 // ===================================================================
 
-const CACHE_NAME = 'bg-remover-v14';
+const CACHE_NAME = 'bg-remover-v16';
 const ASSETS = [
   './',
   './index.html',

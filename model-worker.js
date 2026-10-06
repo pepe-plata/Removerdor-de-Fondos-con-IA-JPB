@@ -1,30 +1,69 @@
 // ===================================================================
-//  model-worker.js — Worker ONNX con soporte WebGPU + WASM fallback
+//  model-worker.js
+//  - Detecta Android y fuerza WASM (CPU) para evitar conflictos con el
+//    compositor de Chrome Android.
+//  - En escritorio usa WebGPU si el main thread lo habilita.
 // ===================================================================
 
 importScripts('https://cdn.jsdelivr.net/npm/onnxruntime-web@1.17.0/dist/ort.min.js');
 
+// Configuración WASM
 ort.env.wasm.numThreads = 1;
 ort.env.wasm.simd = true;
 ort.env.wasm.wasmPaths = 'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.17.0/dist/';
 
 let currentSession = null;
 let useWebGPU = false;
+let forceWasm = false;
 
-// Habilitar WebGPU si el main thread lo indica
+// -------------------------------------------------------------------
+//  Detección de Android dentro del worker
+// -------------------------------------------------------------------
+const WORKER_IS_ANDROID = /Android/i.test(navigator.userAgent);
+
+if (WORKER_IS_ANDROID) {
+  console.log('[worker] Android detectado → WASM (CPU) forzado');
+  forceWasm = true;
+  useWebGPU = false;
+} else {
+  console.log('[worker] Escritorio detectado → esperando indicación del main thread');
+}
+
+// -------------------------------------------------------------------
+//  Mensajes del main thread
+// -------------------------------------------------------------------
 self.addEventListener('message', (e) => {
-  if (e.data && e.data.type === 'enable-webgpu') {
+  if (!e.data) return;
+
+  if (e.data.type === 'enable-webgpu') {
+    if (forceWasm || WORKER_IS_ANDROID) {
+      console.log('[worker] Ignorando enable-webgpu (Android/WASM forzado)');
+      return;
+    }
     useWebGPU = true;
-    console.log('[worker] WebGPU habilitado por el main thread');
+    console.log('[worker] WebGPU habilitado');
+  }
+
+  if (e.data.type === 'force-wasm') {
+    forceWasm = true;
+    useWebGPU = false;
+    console.log('[worker] WASM forzado por main thread');
   }
 });
 
-// -------------- Descarga con progreso --------------
+// -------------------------------------------------------------------
+//  Descarga con progreso
+// -------------------------------------------------------------------
 async function downloadWithProgress(url, onProgress) {
   const response = await fetch(url, {
-    method: 'GET', redirect: 'follow', mode: 'cors', credentials: 'omit'
+    method: 'GET',
+    redirect: 'follow',
+    mode: 'cors',
+    credentials: 'omit'
   });
-  if (!response.ok) throw new Error(`HTTP ${response.status} ${response.statusText} en ${url}`);
+  if (!response.ok) {
+    throw new Error(`HTTP ${response.status} ${response.statusText} en ${url}`);
+  }
 
   const contentLength = response.headers.get('Content-Length');
   const total = contentLength ? parseInt(contentLength, 10) : 0;
@@ -38,12 +77,18 @@ async function downloadWithProgress(url, onProgress) {
       if (done) break;
       chunks.push(value);
       received += value.length;
-      if (total > 0) onProgress({ received, total, percent: Math.round((received / total) * 100) });
-      else onProgress({ received, total: 0, percent: -1 });
+      if (total > 0) {
+        onProgress({ received, total, percent: Math.round((received / total) * 100) });
+      } else {
+        onProgress({ received, total: 0, percent: -1 });
+      }
     }
     const buffer = new Uint8Array(received);
     let offset = 0;
-    for (const chunk of chunks) { buffer.set(chunk, offset); offset += chunk.length; }
+    for (const chunk of chunks) {
+      buffer.set(chunk, offset);
+      offset += chunk.length;
+    }
     return buffer.buffer;
   } else {
     onProgress({ received: 0, total: 0, percent: -1 });
@@ -53,7 +98,9 @@ async function downloadWithProgress(url, onProgress) {
   }
 }
 
-// -------------- Preprocesamiento --------------
+// -------------------------------------------------------------------
+//  Preprocesamiento
+// -------------------------------------------------------------------
 function preprocessImage(imageBitmap, size = 320) {
   const canvas = new OffscreenCanvas(size, size);
   const ctx = canvas.getContext('2d');
@@ -71,20 +118,22 @@ function preprocessImage(imageBitmap, size = 320) {
   return float32;
 }
 
-// -------------- Inferencia --------------
+// -------------------------------------------------------------------
+//  Inferencia
+// -------------------------------------------------------------------
 async function runInference(modelBuffer, imageBitmap) {
   if (currentSession) {
     try { await currentSession.release(); } catch (_) {}
     currentSession = null;
   }
 
-  // Elegir providers
+  // Elegir providers según configuración
   const providers = [];
-  if (useWebGPU) providers.push('webgpu');
+  if (useWebGPU && !forceWasm) providers.push('webgpu');
   providers.push('wasm');
 
   let session = null;
-  let usedProvider = providers[0];
+  let usedProvider = null;
 
   for (const provider of providers) {
     try {
@@ -134,9 +183,12 @@ async function runInference(modelBuffer, imageBitmap) {
   return { mask, width: ow, height: oh, provider: usedProvider };
 }
 
-// -------------- Mensajes --------------
+// -------------------------------------------------------------------
+//  Mensajes principales
+// -------------------------------------------------------------------
 self.onmessage = async (e) => {
   const { id, action, payload } = e.data;
+  if (!action) return; // mensajes de control ya gestionados arriba
 
   try {
     if (action === 'download') {
@@ -153,7 +205,16 @@ self.onmessage = async (e) => {
       const { modelBuffer, imageBitmap } = payload;
       const out = await runInference(modelBuffer, imageBitmap);
       self.postMessage(
-        { id, type: 'result', result: { mask: out.mask, width: out.width, height: out.height, provider: out.provider } },
+        {
+          id,
+          type: 'result',
+          result: {
+            mask: out.mask,
+            width: out.width,
+            height: out.height,
+            provider: out.provider
+          }
+        },
         [out.mask.buffer]
       );
     }
@@ -163,7 +224,8 @@ self.onmessage = async (e) => {
   } catch (err) {
     console.error('[worker]', err);
     self.postMessage({
-      id, type: 'error',
+      id,
+      type: 'error',
       error: (err && err.message) ? err.message : String(err)
     });
   }
