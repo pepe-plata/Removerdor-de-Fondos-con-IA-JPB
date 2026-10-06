@@ -34,6 +34,9 @@
       <img src="icons/night.png" alt="Oscuro" class="theme-icon" />
       <span class="theme-thumb"></span>
     </div>
+    <button id="btnZoomFit" class="icon-btn" title="Ajustar a ventana" disabled>
+      <img src="icons/resetzoom.png" alt="" />
+    </button>
     <button id="btnToggleView" class="icon-btn" title="Original/Procesado" disabled>
       <img src="icons/view.png" alt="" />
     </button>
@@ -53,7 +56,6 @@
 
 <!-- ================= MAIN LAYOUT ================= -->
 <main class="app-main">
-  <!-- SIDEBAR PANEL -->
   <aside class="sidebar" id="sidebar">
     <div class="sidebar-header">
       <span class="sidebar-title">Secciones</span>
@@ -87,7 +89,6 @@
       <div id="processStatus" class="status">Listo</div>
     </div>
 
-    <!-- MASK EDITOR -->
     <div class="panel-section">
       <label class="check-field title-check">
         <input type="checkbox" id="maskEditorToggle" />
@@ -141,7 +142,6 @@
       </div>
     </div>
 
-    <!-- COLOR REMOVAL -->
     <div class="panel-section collapsible" data-section="color">
       <h2 class="section-title">
         <span class="icon-title">
@@ -184,7 +184,6 @@
       </div>
     </div>
 
-    <!-- FILL BACKGROUND -->
     <div class="panel-section collapsible" data-section="fill">
       <h2 class="section-title">
         <span class="icon-title">
@@ -241,7 +240,6 @@
       </div>
     </div>
 
-    <!-- CANVAS BACKGROUND COLOR -->
     <div class="panel-section collapsible" data-section="bg">
       <h2 class="section-title">
         <span class="icon-title">
@@ -298,10 +296,8 @@
     </div>
   </aside>
 
-  <!-- OVERLAY para móvil -->
   <div class="sidebar-overlay" id="sidebarOverlay"></div>
 
-  <!-- CANVAS AREA -->
   <section class="canvas-area" id="canvasArea">
     <div class="empty-state" id="emptyState">
       <div class="empty-icon">🖼️</div>
@@ -323,7 +319,6 @@
   </section>
 </main>
 
-<!-- ================= FOOTER ================= -->
 <footer class="app-footer">
   <span id="dims">— × — px</span>
   <span class="sep">|</span>
@@ -416,9 +411,9 @@
 
         <h4>Gestos táctiles</h4>
         <ul>
-          <li><b>1 dedo:</b> arrastrar = desplazar la imagen.</li>
-          <li><b>2 dedos:</b> pellizcar = zoom.</li>
-          <li><b>Pincel:</b> activa "Editor de Máscara" y dibuja con un dedo.</li>
+          <li><b>1 dedo:</b> desplazar la imagen (pan).</li>
+          <li><b>2 dedos:</b> pellizcar para hacer zoom.</li>
+          <li><b>Con Editor de Máscara activo:</b> 1 dedo pinta sobre la máscara; 2 dedos siguen haciendo zoom/pan.</li>
         </ul>
 
         <h4>Guardar</h4>

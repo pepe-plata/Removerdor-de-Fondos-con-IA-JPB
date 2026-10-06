@@ -1,5 +1,5 @@
 // ===================================================================
-//  Removedor de Fondos con IA JPB — PWA (v9)
+//  Removedor de Fondos con IA JPB — PWA (v10)
 //  HTML + CSS + JS puro. Sin frameworks.
 // ===================================================================
 
@@ -7,7 +7,7 @@
   'use strict';
 
   // ===================================================================
-  //  SPLASH (2 segundos)
+  //  SPLASH
   // ===================================================================
   const splashEl = document.getElementById('splash');
   if (splashEl) {
@@ -57,6 +57,11 @@
     maskBackup: null,
     copyExif: false,
 
+    // Touch
+    activePointers: new Map(),   // pointerId -> {x, y}
+    pinchStart: null,            // { dist, zoom, midX, midY, panX, panY }
+    touchStartedInCanvas: false,
+
     fill: {
       enabled: false,
       color: '#ffffff',
@@ -103,7 +108,9 @@
     btnCloseSidebar: $('btnCloseSidebar'),
     sidebar: $('sidebar'),
     sidebarOverlay: $('sidebarOverlay'),
+    appMain: document.querySelector('.app-main'),
     btnHelp: $('btnHelp'),
+    btnZoomFit: $('btnZoomFit'),
     btnToggleView: $('btnToggleView'),
     btnCopy: $('btnCopy'),
     btnSave: $('btnSave'),
@@ -196,7 +203,6 @@
     return c;
   };
   const setStatus = (msg) => { els.statusMsg.textContent = msg; };
-  const baseName = (name) => name.replace(/\.[^.]+$/, '');
   const formatBytes = (b) => {
     if (b < 1024) return b + ' B';
     if (b < 1024 * 1024) return (b / 1024).toFixed(1) + ' KB';
@@ -207,6 +213,15 @@
     const m = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex);
     if (!m) return null;
     return { r: parseInt(m[1], 16), g: parseInt(m[2], 16), b: parseInt(m[3], 16) };
+  };
+  // Devuelve solo el nombre base SIN extensión y SIN id añadido
+  const cleanFileName = (name) => {
+    if (!name) return 'imagen';
+    // Quitar extensión
+    let n = name.replace(/\.[^.]+$/, '');
+    // Quitar cualquier patrón [ID] o (ID) al final
+    n = n.replace(/\s*[\[\(][^\]\)]*[\]\)]\s*$/g, '').trim();
+    return n || 'imagen';
   };
 
   // ===================================================================
@@ -249,7 +264,7 @@
   }
 
   // ===================================================================
-  //  SIDEBAR MÓVIL (drawer)
+  //  SIDEBAR
   // ===================================================================
   function isMobile() {
     return window.matchMedia('(max-width: 720px)').matches;
@@ -259,20 +274,39 @@
     els.sidebar.classList.add('open');
     els.sidebarOverlay.classList.add('visible');
   }
-
   function closeSidebar() {
     els.sidebar.classList.remove('open');
     els.sidebarOverlay.classList.remove('visible');
   }
-
-  function toggleSidebar() {
-    if (els.sidebar.classList.contains('open')) closeSidebar();
-    else openSidebar();
+  function toggleDesktopSidebar() {
+    const collapsed = els.appMain.classList.toggle('sidebar-collapsed');
+    localStorage.setItem('sidebarCollapsed', collapsed ? '1' : '0');
   }
 
-  els.btnMenu.addEventListener('click', toggleSidebar);
+  els.btnMenu.addEventListener('click', () => {
+    if (isMobile()) {
+      if (els.sidebar.classList.contains('open')) closeSidebar();
+      else openSidebar();
+    } else {
+      toggleDesktopSidebar();
+    }
+  });
   els.btnCloseSidebar.addEventListener('click', closeSidebar);
-  els.sidebarOverlay.addEventListener('click', closeSidebar);
+  els.sidebarOverlay.addEventListener('click', () => {
+    if (isMobile()) closeSidebar();
+    else {
+      // En escritorio, si estaba colapsado, expandir
+      els.appMain.classList.remove('sidebar-collapsed');
+      localStorage.setItem('sidebarCollapsed', '0');
+    }
+  });
+
+  // Restaurar estado del sidebar en escritorio
+  (function initSidebarState() {
+    if (!isMobile() && localStorage.getItem('sidebarCollapsed') === '1') {
+      els.appMain.classList.add('sidebar-collapsed');
+    }
+  })();
 
   document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape' && els.sidebar.classList.contains('open')) {
@@ -289,34 +323,6 @@
       });
     }
   });
-
-  // Swipe gestures
-  (function initSwipeGestures() {
-    let startX = 0, startY = 0, tracking = false;
-
-    document.addEventListener('touchstart', (e) => {
-      if (!isMobile() || e.touches.length !== 1) return;
-      const t = e.touches[0];
-      startX = t.clientX;
-      startY = t.clientY;
-      tracking = true;
-    }, { passive: true });
-
-    document.addEventListener('touchend', (e) => {
-      if (!tracking || !isMobile()) return;
-      tracking = false;
-      const t = e.changedTouches[0];
-      const dx = t.clientX - startX;
-      const dy = t.clientY - startY;
-      if (Math.abs(dx) < 60 || Math.abs(dy) > Math.abs(dx)) return;
-
-      if (dx > 0 && startX < 30 && !els.sidebar.classList.contains('open')) {
-        openSidebar();
-      } else if (dx < 0 && els.sidebar.classList.contains('open')) {
-        closeSidebar();
-      }
-    }, { passive: true });
-  })();
 
   window.addEventListener('resize', () => {
     if (!isMobile()) closeSidebar();
@@ -539,12 +545,8 @@
   // ===================================================================
   //  MODAL AYUDA
   // ===================================================================
-  els.btnHelp.addEventListener('click', () => {
-    els.helpModal.hidden = false;
-  });
-  els.helpClose.addEventListener('click', () => {
-    els.helpModal.hidden = true;
-  });
+  els.btnHelp.addEventListener('click', () => { els.helpModal.hidden = false; });
+  els.helpClose.addEventListener('click', () => { els.helpModal.hidden = true; });
   els.helpModal.addEventListener('click', (e) => {
     if (e.target === els.helpModal) els.helpModal.hidden = true;
   });
@@ -575,8 +577,9 @@
       alert('Por favor selecciona una imagen válida');
       return;
     }
+    // Mostrar nombre limpio (sin [ID])
     els.fileName.textContent = file.name;
-    state.originalFileName = baseName(file.name);
+    state.originalFileName = cleanFileName(file.name);
 
     const isJpeg = file.type === 'image/jpeg' || /\.jpe?g$/i.test(file.name);
     if (isJpeg) {
@@ -652,12 +655,13 @@
   //  TRANSFORM
   // ===================================================================
   function fitToView() {
+    if (!state.originalImage) return;
     const area = els.canvasArea.getBoundingClientRect();
     const img = state.originalImage;
     const padding = 40;
     const sx = (area.width - padding) / img.width;
     const sy = (area.height - padding) / img.height;
-    state.zoom = Math.min(sx, sy, 1);
+    state.zoom = Math.max(0.01, Math.min(sx, sy));
     state.panX = (area.width - img.width * state.zoom) / 2;
     state.panY = (area.height - img.height * state.zoom) / 2;
     applyTransform();
@@ -667,6 +671,16 @@
     els.canvasInner.style.transform =
       `translate(${state.panX}px, ${state.panY}px) scale(${state.zoom})`;
     els.zoomVal.textContent = Math.round(state.zoom * 100) + '%';
+  }
+
+  // Zoom centrado en un punto del área (coordenadas de pantalla)
+  function zoomAtPoint(newZoom, screenX, screenY) {
+    newZoom = clamp(newZoom, 0.05, 20);
+    const oldZoom = state.zoom;
+    state.panX = screenX - (screenX - state.panX) * (newZoom / oldZoom);
+    state.panY = screenY - (screenY - state.panY) * (newZoom / oldZoom);
+    state.zoom = newZoom;
+    applyTransform();
   }
 
   // ===================================================================
@@ -724,6 +738,7 @@
   function updateUI() {
     const hasImg = !!state.originalImage;
     els.btnProcess.disabled = !hasImg;
+    els.btnZoomFit.disabled = !hasImg;
     els.btnToggleView.disabled = !hasImg || !state.hasProcessed;
     els.btnCopy.disabled = !hasImg;
     els.btnSave.disabled = !hasImg;
@@ -734,7 +749,7 @@
   }
 
   // ===================================================================
-  //  WHEEL + PAN
+  //  WHEEL (ratón) — zoom con rueda, shift/alt para pan
   // ===================================================================
   els.canvasArea.addEventListener('wheel', (e) => {
     if (!state.originalImage) return;
@@ -744,23 +759,51 @@
     const rect = els.canvasArea.getBoundingClientRect();
     const mx = e.clientX - rect.left;
     const my = e.clientY - rect.top;
-    const oldZoom = state.zoom;
     const factor = e.deltaY < 0 ? 1.15 : 1 / 1.15;
-    const newZoom = clamp(oldZoom * factor, 0.05, 20);
-    state.panX = mx - (mx - state.panX) * (newZoom / oldZoom);
-    state.panY = my - (my - state.panY) * (newZoom / oldZoom);
-    state.zoom = newZoom;
-    applyTransform();
+    zoomAtPoint(state.zoom * factor, mx, my);
   }, { passive: false });
 
+  // ===================================================================
+  //  POINTER EVENTS (ratón + touch unificado)
+  //  - 1 dedo en modo pan: mover
+  //  - 1 dedo en modo brush/magic/pick: dibujar/seleccionar
+  //  - 2 dedos (siempre): pinch-zoom + pan
+  // ===================================================================
   els.canvasArea.addEventListener('pointerdown', (e) => {
     if (!state.originalImage) return;
+
+    // Guardar pointer activo
+    state.activePointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+
+    // Si hay 2+ pointers, iniciamos pinch y cancelamos cualquier acción de dibujo
+    if (state.activePointers.size === 2) {
+      // Cancelar dibujo
+      state.isDrawing = false;
+      state.lastBrushPoint = null;
+      // Cancelar pan
+      state.isPanning = false;
+      startPinch();
+      try { els.canvasArea.setPointerCapture(e.pointerId); } catch (_) {}
+      e.preventDefault();
+      return;
+    }
+
+    // Con 1 solo pointer
     const isMiddle = e.button === 1;
     const isRight = e.button === 2;
     const isSpace = state.spacePressed;
     const editingMask = state.maskEditorActive;
     const pickingColor = state.colorPickMode;
-    const wantPan = isMiddle || isRight || isSpace || (!editingMask && !pickingColor);
+
+    // Touch: siempre se comporta como pan (a menos que edición de máscara/pick esté activo)
+    const isTouch = e.pointerType === 'touch';
+
+    let wantPan;
+    if (isTouch) {
+      wantPan = !editingMask && !pickingColor;
+    } else {
+      wantPan = isMiddle || isRight || isSpace || (!editingMask && !pickingColor);
+    }
 
     if (wantPan) {
       state.isPanning = true;
@@ -770,7 +813,10 @@
       e.preventDefault();
       return;
     }
-    if (e.button !== 0) return;
+
+    // Modo edición / pick (solo botón izquierdo o touch)
+    if (!isTouch && e.button !== 0) return;
+
     if (pickingColor) { pickColorFromImage(e); return; }
     if (editingMask) {
       if (state.smartSelect) doMagicWand(e);
@@ -780,7 +826,20 @@
 
   els.canvasArea.addEventListener('pointermove', (e) => {
     if (!state.originalImage) return;
+
+    // Actualizar pointer activo
+    if (state.activePointers.has(e.pointerId)) {
+      state.activePointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    }
+
+    // Pinch activo (2 dedos)
+    if (state.activePointers.size >= 2 && state.pinchStart) {
+      updatePinch();
+      return;
+    }
+
     updateCursor(e);
+
     if (state.isPanning) {
       const dx = e.clientX - state.lastPointer.x;
       const dy = e.clientY - state.lastPointer.y;
@@ -790,20 +849,32 @@
       applyTransform();
       return;
     }
+
     if (state.isDrawing) continueBrushStroke(e);
   });
 
-  els.canvasArea.addEventListener('pointerup', (e) => {
-    if (state.isPanning) {
+  function endPointer(e) {
+    state.activePointers.delete(e.pointerId);
+
+    // Si quedaba un pinch activo y quedan <2 pointers, terminamos pinch
+    if (state.pinchStart && state.activePointers.size < 2) {
+      state.pinchStart = null;
+    }
+
+    if (state.isPanning && state.activePointers.size === 0) {
       state.isPanning = false;
       els.canvasArea.classList.remove('panning');
       try { els.canvasArea.releasePointerCapture(e.pointerId); } catch (_) {}
     }
-    if (state.isDrawing) {
+
+    if (state.isDrawing && state.activePointers.size === 0) {
       state.isDrawing = false;
       state.lastBrushPoint = null;
     }
-  });
+  }
+
+  els.canvasArea.addEventListener('pointerup', endPointer);
+  els.canvasArea.addEventListener('pointercancel', endPointer);
 
   els.canvasArea.addEventListener('pointerleave', () => {
     els.brushCursor.classList.remove('show');
@@ -825,6 +896,66 @@
       state.spacePressed = false;
       els.canvasArea.style.cursor = '';
     }
+  });
+
+  // ===================================================================
+  //  PINCH ZOOM (2 dedos)
+  // ===================================================================
+  function startPinch() {
+    const pts = Array.from(state.activePointers.values());
+    if (pts.length < 2) return;
+    const [p1, p2] = pts;
+    const dist = Math.hypot(p2.x - p1.x, p2.y - p1.y);
+    const midX = (p1.x + p2.x) / 2;
+    const midY = (p1.y + p2.y) / 2;
+    const rect = els.canvasArea.getBoundingClientRect();
+    state.pinchStart = {
+      dist,
+      zoom: state.zoom,
+      panX: state.panX,
+      panY: state.panY,
+      midX,
+      midY,
+      areaMidX: midX - rect.left,
+      areaMidY: midY - rect.top
+    };
+  }
+
+  function updatePinch() {
+    if (!state.pinchStart) return;
+    const pts = Array.from(state.activePointers.values());
+    if (pts.length < 2) return;
+    const [p1, p2] = pts;
+    const dist = Math.hypot(p2.x - p1.x, p2.y - p1.y);
+    const midX = (p1.x + p2.x) / 2;
+    const midY = (p1.y + p2.y) / 2;
+
+    const start = state.pinchStart;
+    const scale = dist / start.dist;
+    const newZoom = clamp(start.zoom * scale, 0.05, 20);
+
+    // Zoom centrado en el midpoint inicial, con desplazamiento por movimiento de dedos
+    const areaMidX = start.areaMidX;
+    const areaMidY = start.areaMidY;
+
+    // Pan por desplazamiento del midpoint
+    const midDx = midX - start.midX;
+    const midDy = midY - start.midY;
+
+    // Aplicar zoom centrado en el midpoint inicial
+    state.panX = areaMidX - (areaMidX - start.panX) * (newZoom / start.zoom) + midDx;
+    state.panY = areaMidY - (areaMidY - start.panY) * (newZoom / start.zoom) + midDy;
+    state.zoom = newZoom;
+    applyTransform();
+  }
+
+  // ===================================================================
+  //  ZOOM FIT
+  // ===================================================================
+  els.btnZoomFit.addEventListener('click', () => {
+    if (!state.originalImage) return;
+    fitToView();
+    setStatus('Ajustado a ventana');
   });
 
   function eventToImageCoords(e) {

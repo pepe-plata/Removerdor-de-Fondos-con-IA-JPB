@@ -1,4 +1,4 @@
-const CACHE_NAME = 'bg-remover-v9';
+const CACHE_NAME = 'bg-remover-v12';
 const ASSETS = [
   './',
   './index.html',
@@ -26,7 +26,8 @@ const ASSETS = [
   './icons/save.png',
   './icons/copy.png',
   './icons/view.png',
-  './icons/help.png'
+  './icons/help.png',
+  './icons/resetzoom.png'
 ];
 
 self.addEventListener('install', (e) => {
