@@ -1,6 +1,5 @@
 // ===================================================================
-//  model-worker.js — Worker para descarga y ejecución de modelos ONNX
-//  Envía/recibe ArrayBuffers (no Blobs) para máxima compatibilidad.
+//  model-worker.js — Worker ONNX con soporte WebGPU + WASM fallback
 // ===================================================================
 
 importScripts('https://cdn.jsdelivr.net/npm/onnxruntime-web@1.17.0/dist/ort.min.js');
@@ -10,19 +9,22 @@ ort.env.wasm.simd = true;
 ort.env.wasm.wasmPaths = 'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.17.0/dist/';
 
 let currentSession = null;
+let useWebGPU = false;
+
+// Habilitar WebGPU si el main thread lo indica
+self.addEventListener('message', (e) => {
+  if (e.data && e.data.type === 'enable-webgpu') {
+    useWebGPU = true;
+    console.log('[worker] WebGPU habilitado por el main thread');
+  }
+});
 
 // -------------- Descarga con progreso --------------
 async function downloadWithProgress(url, onProgress) {
   const response = await fetch(url, {
-    method: 'GET',
-    redirect: 'follow',
-    mode: 'cors',
-    credentials: 'omit'
+    method: 'GET', redirect: 'follow', mode: 'cors', credentials: 'omit'
   });
-
-  if (!response.ok) {
-    throw new Error(`HTTP ${response.status} ${response.statusText} en ${url}`);
-  }
+  if (!response.ok) throw new Error(`HTTP ${response.status} ${response.statusText} en ${url}`);
 
   const contentLength = response.headers.get('Content-Length');
   const total = contentLength ? parseInt(contentLength, 10) : 0;
@@ -31,26 +33,17 @@ async function downloadWithProgress(url, onProgress) {
     const reader = response.body.getReader();
     const chunks = [];
     let received = 0;
-
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
       chunks.push(value);
       received += value.length;
-      if (total > 0) {
-        onProgress({ received, total, percent: Math.round((received / total) * 100) });
-      } else {
-        onProgress({ received, total: 0, percent: -1 });
-      }
+      if (total > 0) onProgress({ received, total, percent: Math.round((received / total) * 100) });
+      else onProgress({ received, total: 0, percent: -1 });
     }
-
-    // Concatenar chunks en un único ArrayBuffer
     const buffer = new Uint8Array(received);
     let offset = 0;
-    for (const chunk of chunks) {
-      buffer.set(chunk, offset);
-      offset += chunk.length;
-    }
+    for (const chunk of chunks) { buffer.set(chunk, offset); offset += chunk.length; }
     return buffer.buffer;
   } else {
     onProgress({ received: 0, total: 0, percent: -1 });
@@ -85,10 +78,30 @@ async function runInference(modelBuffer, imageBitmap) {
     currentSession = null;
   }
 
-  currentSession = await ort.InferenceSession.create(modelBuffer, {
-    executionProviders: ['wasm'],
-    graphOptimizationLevel: 'all'
-  });
+  // Elegir providers
+  const providers = [];
+  if (useWebGPU) providers.push('webgpu');
+  providers.push('wasm');
+
+  let session = null;
+  let usedProvider = providers[0];
+
+  for (const provider of providers) {
+    try {
+      session = await ort.InferenceSession.create(modelBuffer, {
+        executionProviders: [provider],
+        graphOptimizationLevel: 'all'
+      });
+      usedProvider = provider;
+      break;
+    } catch (err) {
+      console.warn(`[worker] Falló provider ${provider}:`, err.message);
+    }
+  }
+
+  if (!session) throw new Error('No se pudo inicializar el modelo con ningún provider');
+  currentSession = session;
+  console.log(`[worker] Sesión inicializada con ${usedProvider}`);
 
   const SIZE = 320;
   const float32 = preprocessImage(imageBitmap, SIZE);
@@ -118,7 +131,7 @@ async function runInference(modelBuffer, imageBitmap) {
     mask[i] = v;
   }
 
-  return { mask, width: ow, height: oh };
+  return { mask, width: ow, height: oh, provider: usedProvider };
 }
 
 // -------------- Mensajes --------------
@@ -140,7 +153,7 @@ self.onmessage = async (e) => {
       const { modelBuffer, imageBitmap } = payload;
       const out = await runInference(modelBuffer, imageBitmap);
       self.postMessage(
-        { id, type: 'result', result: { mask: out.mask, width: out.width, height: out.height } },
+        { id, type: 'result', result: { mask: out.mask, width: out.width, height: out.height, provider: out.provider } },
         [out.mask.buffer]
       );
     }
@@ -150,8 +163,7 @@ self.onmessage = async (e) => {
   } catch (err) {
     console.error('[worker]', err);
     self.postMessage({
-      id,
-      type: 'error',
+      id, type: 'error',
       error: (err && err.message) ? err.message : String(err)
     });
   }

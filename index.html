@@ -34,15 +34,6 @@
       <img src="icons/night.png" alt="Oscuro" class="theme-icon" />
       <span class="theme-thumb"></span>
     </div>
-    <button id="btnZoomFit" class="icon-btn" title="Ajustar a ventana" disabled>
-      <img src="icons/resetzoom.png" alt="" />
-    </button>
-    <button id="btnToggleView" class="icon-btn" title="Original/Procesado" disabled>
-      <img src="icons/view.png" alt="" />
-    </button>
-    <button id="btnCopy" class="icon-btn" title="Copiar" disabled>
-      <img src="icons/copy.png" alt="" />
-    </button>
     <button id="btnSave" class="icon-btn" title="Guardar" disabled>
       <img src="icons/save.png" alt="" />
     </button>
@@ -53,6 +44,26 @@
     <input type="file" id="fileInput" accept="image/*" hidden />
   </div>
 </header>
+
+<!-- ================= FLOATING TOOLBAR ================= -->
+<div class="floating-toolbar" id="floatingToolbar">
+  <button id="btnUndo" class="icon-btn" title="Deshacer (Ctrl+Z)" disabled>
+    <img src="icons/undo.png" alt="" />
+  </button>
+  <button id="btnRedo" class="icon-btn" title="Rehacer (Ctrl+Y)" disabled>
+    <img src="icons/redo.png" alt="" />
+  </button>
+  <div class="toolbar-sep"></div>
+  <button id="btnZoomFit" class="icon-btn" title="Ajustar a ventana (0)" disabled>
+    <img src="icons/resetzoom.png" alt="" />
+  </button>
+  <button id="btnToggleView" class="icon-btn" title="Original/Procesado" disabled>
+    <img src="icons/view.png" alt="" />
+  </button>
+  <button id="btnCopy" class="icon-btn" title="Copiar (Ctrl+C)" disabled>
+    <img src="icons/copy.png" alt="" />
+  </button>
+</div>
 
 <!-- ================= MAIN LAYOUT ================= -->
 <main class="app-main">
@@ -89,6 +100,7 @@
       <div id="processStatus" class="status">Listo</div>
     </div>
 
+    <!-- MASK EDITOR -->
     <div class="panel-section">
       <label class="check-field title-check">
         <input type="checkbox" id="maskEditorToggle" />
@@ -96,11 +108,34 @@
         <span>Editor de Máscara</span>
       </label>
       <div id="maskEditorBody" class="editor-body disabled">
-        <label class="field">
+
+        <!-- Herramientas de dibujo -->
+        <div class="tool-grid" id="toolGroup">
+          <button class="tool-btn active" data-tool="brush" title="Pincel">
+            <img src="icons/maskedit.png" alt="" class="tool-icon" />
+            <span>Pincel</span>
+          </button>
+          <button class="tool-btn" data-tool="rect" title="Rectángulo">
+            <img src="icons/rect.png" alt="" class="tool-icon" onerror="this.replaceWith(document.createTextNode('▭'))" />
+            <span>Rect</span>
+          </button>
+          <button class="tool-btn" data-tool="lasso" title="Lazo">
+            <img src="icons/lasso.png" alt="" class="tool-icon" onerror="this.replaceWith(document.createTextNode('✎'))" />
+            <span>Lazo</span>
+          </button>
+          <button class="tool-btn" data-tool="wand" title="Varita mágica">
+            <img src="icons/magic-wand.png" alt="" class="tool-icon" />
+            <span>Varita</span>
+          </button>
+        </div>
+
+        <!-- Pincel: tamaño -->
+        <label class="field" id="brushSizeField">
           <span>Tamaño pincel: <b id="brushSizeVal">15</b> px</span>
           <input type="range" id="brushSize" min="1" max="100" value="15" />
         </label>
 
+        <!-- Modo add/remove común -->
         <div class="btn-group" id="brushModeGroup">
           <button class="mode-btn active" data-mode="add">
             <img src="icons/add.png" alt="" class="btn-icon" />
@@ -112,12 +147,7 @@
           </button>
         </div>
 
-        <label class="check-field">
-          <input type="checkbox" id="smartSelect" />
-          <img src="icons/magic-wand.png" alt="" class="section-icon" />
-          <span>Varita mágica (clic)</span>
-        </label>
-
+        <!-- Opciones varita mágica -->
         <div id="smartOpts" class="smart-opts hidden">
           <label class="field">
             <span>Color: <b id="smartColorVal">30</b></span>
@@ -127,6 +157,11 @@
             <span>Borde: <b id="smartEdgeVal">30</b></span>
             <input type="range" id="smartEdge" min="0" max="100" value="30" />
           </label>
+        </div>
+
+        <!-- Rect/Lasso: opciones -->
+        <div id="shapeOpts" class="smart-opts hidden">
+          <p class="hint" id="shapeHint">Arrastra para dibujar el rectángulo.</p>
         </div>
 
         <div class="btn-group">
@@ -142,6 +177,7 @@
       </div>
     </div>
 
+    <!-- COLOR REMOVAL -->
     <div class="panel-section collapsible" data-section="color">
       <h2 class="section-title">
         <span class="icon-title">
@@ -184,6 +220,7 @@
       </div>
     </div>
 
+    <!-- FILL BACKGROUND -->
     <div class="panel-section collapsible" data-section="fill">
       <h2 class="section-title">
         <span class="icon-title">
@@ -240,6 +277,47 @@
       </div>
     </div>
 
+    <!-- BACKGROUND BLUR (bokeh) -->
+    <div class="panel-section collapsible" data-section="blur">
+      <h2 class="section-title">
+        <span class="icon-title">
+          <img src="icons/blur.png" alt="" class="section-icon" onerror="this.style.display='none'" />
+          <span>Desenfoque de Fondo</span>
+        </span>
+        <span class="chev">▾</span>
+      </h2>
+      <div class="section-body">
+        <p class="hint">Aplica efecto bokeh (desenfoque gaussiano) al fondo.</p>
+
+        <label class="check-field">
+          <input type="checkbox" id="blurEnabled" />
+          <span>Activar desenfoque de fondo</span>
+        </label>
+
+        <label class="field">
+          <span>Intensidad: <b id="blurAmountVal">15</b> px</span>
+          <input type="range" id="blurAmount" min="0" max="60" value="15" />
+        </label>
+
+        <label class="field">
+          <span>Oscurecer fondo: <b id="blurDarkVal">0</b>%</span>
+          <input type="range" id="blurDark" min="0" max="80" value="0" />
+        </label>
+
+        <div class="bg-actions">
+          <button id="btnApplyBlur" class="primary-btn small-btn" disabled>
+            <img src="icons/ok.png" alt="" class="btn-icon" />
+            <span>Aplicar</span>
+          </button>
+          <button id="btnClearBlur" class="secondary-btn small-btn" disabled>
+            <img src="icons/cancel.png" alt="" class="btn-icon" />
+            <span>Quitar</span>
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- CANVAS BACKGROUND COLOR -->
     <div class="panel-section collapsible" data-section="bg">
       <h2 class="section-title">
         <span class="icon-title">
@@ -387,6 +465,7 @@
     <div class="help-tabs">
       <button class="help-tab active" data-tab="android">📱 Android</button>
       <button class="help-tab" data-tab="windows">💻 Windows</button>
+      <button class="help-tab" data-tab="shortcuts">⌨️ Atajos</button>
       <button class="help-tab" data-tab="general">ℹ️ General</button>
     </div>
 
@@ -398,90 +477,79 @@
           <li>Pulsa el menú <b>⋮</b> (esquina superior derecha).</li>
           <li>Selecciona <b>"Añadir a pantalla de inicio"</b> o <b>"Instalar app"</b>.</li>
           <li>Confirma el nombre y pulsa <b>Añadir</b>.</li>
-          <li>La app aparecerá en tu cajón de aplicaciones y podrás abrirla como cualquier otra.</li>
         </ol>
 
-        <h4>Uso básico</h4>
-        <ol>
-          <li>Pulsa <b>Abrir</b> y selecciona una imagen.</li>
-          <li>Elige un modelo (recomendado: <b>U²-Netp</b> — 4.7 MB).</li>
-          <li>Pulsa <b>Remover Fondo</b>. La primera vez descargará el modelo (necesita internet).</li>
-          <li>Después funciona <b>offline</b>.</li>
-        </ol>
+        <h4>Compartir desde otras apps</h4>
+        <p>Una vez instalada, puedes enviar imágenes desde la Galería, WhatsApp, etc. usando el botón <b>Compartir</b> y eligiendo <b>Removedor JPB</b>.</p>
 
         <h4>Gestos táctiles</h4>
         <ul>
-          <li><b>1 dedo:</b> desplazar la imagen (pan).</li>
-          <li><b>2 dedos:</b> pellizcar para hacer zoom.</li>
-          <li><b>Con Editor de Máscara activo:</b> 1 dedo pinta sobre la máscara; 2 dedos siguen haciendo zoom/pan.</li>
-        </ul>
-
-        <h4>Guardar</h4>
-        <ul>
-          <li>Pulsa <b>Guardar</b> y elige la carpeta de destino.</li>
-          <li>Formatos: PNG, JPG, WebP, BMP.</li>
-          <li>Con JPG puedes elegir la calidad y copiar los metadatos EXIF del original.</li>
+          <li><b>1 dedo:</b> pan (mover la imagen).</li>
+          <li><b>2 dedos:</b> pinch-zoom + pan.</li>
+          <li><b>Con editor de máscara:</b> 1 dedo dibuja; 2 dedos siguen haciendo zoom/pan.</li>
         </ul>
       </div>
 
       <div class="help-panel" data-panel="windows">
         <h4>Instalar como app</h4>
         <ol>
-          <li>Abre esta página en <b>Chrome</b> o <b>Edge</b> en Windows.</li>
-          <li>En la barra de direcciones aparecerá un icono <b>⊕ Instalar</b>. Púlsalo.</li>
-          <li>O ve al menú <b>⋮</b> → <b>Instalar Removedor de Fondos con IA JPB</b>.</li>
-          <li>La app se abrirá en su propia ventana sin barras del navegador.</li>
+          <li>Abre esta página en <b>Chrome</b> o <b>Edge</b>.</li>
+          <li>Pulsa el icono <b>⊕ Instalar</b> en la barra de direcciones.</li>
         </ol>
+
+        <h4>Abrir con la app</h4>
+        <p>Con la app instalada, puedes hacer clic derecho en una imagen y elegir <b>Abrir con → Removedor JPB</b> desde el explorador de Windows.</p>
 
         <h4>Uso básico</h4>
         <ol>
-          <li>Pulsa <b>Abrir</b> o arrastra una imagen a la ventana.</li>
-          <li>También puedes pegar con <b>Ctrl+V</b> desde el portapapeles.</li>
+          <li>Pulsa <b>Abrir</b> o arrastra una imagen.</li>
+          <li>También puedes pegar con <b>Ctrl+V</b>.</li>
           <li>Elige modelo y pulsa <b>Remover Fondo</b>.</li>
         </ol>
+      </div>
 
-        <h4>Atajos de teclado</h4>
+      <div class="help-panel" data-panel="shortcuts">
+        <h4>Atajos de teclado (Windows)</h4>
         <ul>
-          <li><b>Rueda del ratón:</b> zoom hacia el cursor.</li>
-          <li><b>SHIFT + rueda:</b> desplazar horizontalmente.</li>
-          <li><b>ALT + rueda:</b> desplazar verticalmente.</li>
-          <li><b>Botón medio / derecho (arrastrar):</b> desplazar.</li>
-          <li><b>Barra espaciadora + arrastrar:</b> desplazar.</li>
-          <li><b>Ctrl+V:</b> pegar imagen del portapapeles.</li>
+          <li><b>Ctrl + O</b>: Abrir imagen</li>
+          <li><b>Ctrl + S</b>: Guardar</li>
+          <li><b>Ctrl + C</b>: Copiar al portapapeles</li>
+          <li><b>Ctrl + Z</b>: Deshacer (edición de máscara)</li>
+          <li><b>Ctrl + Y</b>: Rehacer (edición de máscara)</li>
+          <li><b>+</b> / <b>-</b>: Zoom in / out</li>
+          <li><b>0</b>: Ajustar a ventana</li>
+          <li><b>1</b>: Zoom 100%</li>
+          <li><b>[</b> / <b>]</b>: Reducir / aumentar pincel</li>
+          <li><b>Ctrl + V</b>: Pegar imagen</li>
+          <li><b>Barra espaciadora</b> + arrastrar: pan</li>
         </ul>
-
-        <h4>Guardar</h4>
+        <h4>Ratón</h4>
         <ul>
-          <li>Pulsa <b>Guardar</b>, elige carpeta y formato.</li>
-          <li>Formatos soportados: PNG, JPG, WebP, BMP.</li>
-          <li>Con JPG puedes ajustar la calidad y conservar los metadatos EXIF originales.</li>
+          <li><b>Rueda:</b> zoom hacia el cursor</li>
+          <li><b>Shift + rueda:</b> scroll horizontal</li>
+          <li><b>Alt + rueda:</b> scroll vertical</li>
+          <li><b>Botón medio / derecho:</b> pan</li>
         </ul>
       </div>
 
       <div class="help-panel" data-panel="general">
         <h4>¿Cómo funciona?</h4>
-        <p>Removedor de Fondos con IA JPB usa modelos <b>ONNX</b> que se ejecutan <b>localmente</b> en tu dispositivo. Ninguna imagen se sube a ningún servidor.</p>
+        <p>Todo se ejecuta <b>localmente</b> en tu dispositivo (WebAssembly o WebGPU). Ninguna imagen se sube a ningún servidor.</p>
 
         <h4>Modelos disponibles</h4>
         <ul>
-          <li><b>U²-Netp (4.7 MB):</b> rápido, ideal para empezar.</li>
-          <li><b>Silueta (44 MB):</b> buen balance tamaño/calidad.</li>
-          <li><b>U²-Net (170 MB):</b> calidad general alta.</li>
-          <li><b>U²-Net Human (176 MB):</b> especializado en personas.</li>
-          <li><b>ISNet General (179 MB):</b> máxima calidad de bordes.</li>
+          <li><b>U²-Netp (4.7 MB):</b> rápido.</li>
+          <li><b>Silueta (44 MB):</b> buen balance.</li>
+          <li><b>U²-Net (170 MB):</b> alta calidad.</li>
+          <li><b>U²-Net Human (176 MB):</b> personas.</li>
+          <li><b>ISNet General (179 MB):</b> bordes finos.</li>
         </ul>
 
-        <h4>Almacenamiento</h4>
-        <p>Los modelos se guardan en tu navegador (IndexedDB). Puedes gestionarlos desde <b>⚙️ Gestionar modelos</b> y borrarlos si necesitas espacio.</p>
+        <h4>Desenfoque de fondo (bokeh)</h4>
+        <p>Si activas el relleno o el desenfoque de fondo, la app procesa el fondo por separado. Puedes combinar relleno + desenfoque para conseguir efectos de retrato profesionales.</p>
 
-        <h4>Consejos</h4>
-        <ul>
-          <li>Empieza con <b>U²-Netp</b> para probar rápido.</li>
-          <li>Usa <b>U²-Net Human</b> para retratos.</li>
-          <li>Para bordes complejos (pelo, encaje) usa <b>ISNet</b>.</li>
-          <li>Usa el <b>Editor de Máscara</b> para retoques finos.</li>
-          <li>La <b>Varita mágica</b> es ideal para fondos de color uniforme.</li>
-        </ul>
+        <h4>Wake Lock</h4>
+        <p>Mientras la IA procesa, la pantalla no se apagará automáticamente (si el dispositivo lo permite).</p>
       </div>
     </div>
 

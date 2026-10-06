@@ -1,5 +1,5 @@
 // ===================================================================
-//  Removedor de Fondos con IA JPB — PWA (v10)
+//  Removedor de Fondos con IA JPB — PWA (v11)
 //  HTML + CSS + JS puro. Sin frameworks.
 // ===================================================================
 
@@ -12,9 +12,9 @@
   const splashEl = document.getElementById('splash');
   if (splashEl) {
     const SPLASH_DURATION = 2000;
-    const splashShownAt = Date.now();
+    const shownAt = Date.now();
     window.addEventListener('load', () => {
-      const elapsed = Date.now() - splashShownAt;
+      const elapsed = Date.now() - shownAt;
       const remaining = Math.max(0, SPLASH_DURATION - elapsed);
       setTimeout(() => {
         splashEl.classList.add('hide');
@@ -46,6 +46,7 @@
     panY: 0,
     brushSize: 15,
     brushMode: 'add',
+    activeTool: 'brush',       // 'brush' | 'rect' | 'lasso' | 'wand'
     smartSelect: false,
     targetColor: { r: 255, g: 255, b: 255 },
     colorPickMode: false,
@@ -57,15 +58,34 @@
     maskBackup: null,
     copyExif: false,
 
-    // Touch
-    activePointers: new Map(),   // pointerId -> {x, y}
-    pinchStart: null,            // { dist, zoom, midX, midY, panX, panY }
-    touchStartedInCanvas: false,
+    // Rect / Lasso shape drawing state
+    shapeStart: null,          // {x, y} en coordenadas imagen
+    shapeCurrent: null,
+    lassoPoints: [],           // puntos del lazo (coords imagen)
+    isDrawingShape: false,
 
+    // Touch
+    activePointers: new Map(),
+    pinchStart: null,
+
+    // Undo/Redo (solo máscara)
+    history: [],
+    historyIndex: -1,
+    historyMax: 30,
+    isPerformingUndoRedo: false,
+
+    // Fill
     fill: {
       enabled: false,
       color: '#ffffff',
       opacity: 100
+    },
+
+    // Background blur (bokeh)
+    blur: {
+      enabled: false,
+      amount: 15,
+      darken: 0
     },
 
     bgConfig: {
@@ -110,6 +130,8 @@
     sidebarOverlay: $('sidebarOverlay'),
     appMain: document.querySelector('.app-main'),
     btnHelp: $('btnHelp'),
+    btnUndo: $('btnUndo'),
+    btnRedo: $('btnRedo'),
     btnZoomFit: $('btnZoomFit'),
     btnToggleView: $('btnToggleView'),
     btnCopy: $('btnCopy'),
@@ -122,15 +144,17 @@
     btnManageModels: $('btnManageModels'),
     maskEditorToggle: $('maskEditorToggle'),
     maskEditorBody: $('maskEditorBody'),
+    toolGroup: $('toolGroup'),
     brushSize: $('brushSize'),
     brushSizeVal: $('brushSizeVal'),
     brushModeGroup: $('brushModeGroup'),
-    smartSelect: $('smartSelect'),
     smartOpts: $('smartOpts'),
     smartColor: $('smartColor'),
     smartColorVal: $('smartColorVal'),
     smartEdge: $('smartEdge'),
     smartEdgeVal: $('smartEdgeVal'),
+    shapeOpts: $('shapeOpts'),
+    shapeHint: $('shapeHint'),
     btnCancelMask: $('btnCancelMask'),
     btnApplyMask: $('btnApplyMask'),
     targetColor: $('targetColor'),
@@ -151,6 +175,13 @@
     fillOpacityVal: $('fillOpacityVal'),
     btnApplyFill: $('btnApplyFill'),
     btnClearFill: $('btnClearFill'),
+    blurEnabled: $('blurEnabled'),
+    blurAmount: $('blurAmount'),
+    blurAmountVal: $('blurAmountVal'),
+    blurDark: $('blurDark'),
+    blurDarkVal: $('blurDarkVal'),
+    btnApplyBlur: $('btnApplyBlur'),
+    btnClearBlur: $('btnClearBlur'),
     btnReset: $('btnReset'),
     canvasArea: $('canvasArea'),
     canvasViewport: $('canvasViewport'),
@@ -192,6 +223,7 @@
   const overlayCtx = els.overlayCanvas.getContext('2d');
 
   let originalFileBuffer = null;
+  let wakeLock = null;
 
   // ===================================================================
   //  HELPERS
@@ -214,15 +246,37 @@
     if (!m) return null;
     return { r: parseInt(m[1], 16), g: parseInt(m[2], 16), b: parseInt(m[3], 16) };
   };
-  // Devuelve solo el nombre base SIN extensión y SIN id añadido
-  const cleanFileName = (name) => {
+
+  /**
+   * Limpia el nombre de archivo:
+   * - Quita la extensión
+   * - Quita IDs tipo [xxx] o (xxx) o sufijos hex/UUID al final
+   * - Quita prefijos tipo "IMG_", "DSC_", "PXL_" solo si van seguidos de números largos
+   * - Si queda vacío, devuelve "imagen"
+   */
+  function cleanFileName(name) {
     if (!name) return 'imagen';
+    let n = String(name);
+
     // Quitar extensión
-    let n = name.replace(/\.[^.]+$/, '');
-    // Quitar cualquier patrón [ID] o (ID) al final
-    n = n.replace(/\s*[\[\(][^\]\)]*[\]\)]\s*$/g, '').trim();
-    return n || 'imagen';
-  };
+    n = n.replace(/\.[^.\/\\]+$/, '');
+
+    // Quitar patrones [algo] o (algo) al final
+    n = n.replace(/\s*[\[\(][^\]\)]{0,64}[\]\)]\s*$/g, '');
+
+    // Quitar patrones de ID al final: _ABC123, -A1B2C3, .UUID, guiones bajos con hex largos
+    n = n.replace(/[\s._-]+[0-9a-f]{6,}$/i, '');
+
+    // Quitar sufijos tipo "(1)", "_copy", " - copia", "final", "edit"
+    n = n.replace(/[\s._-]+(copy|copia|final|edit|edited|processed|output)$/i, '');
+
+    // Colapsar espacios
+    n = n.replace(/\s+/g, ' ').trim();
+
+    // Fallback
+    if (!n) n = 'imagen';
+    return n;
+  }
 
   // ===================================================================
   //  WORKER
@@ -235,18 +289,10 @@
     const { id, type, progress, result, error } = e.data;
     const call = pendingWorkerCalls.get(id);
     if (!call) return;
-
-    if (type === 'progress') {
-      if (call.onProgress) call.onProgress(progress);
-    } else if (type === 'result') {
-      pendingWorkerCalls.delete(id);
-      call.resolve(result);
-    } else if (type === 'error') {
-      pendingWorkerCalls.delete(id);
-      call.reject(new Error(error));
-    }
+    if (type === 'progress') { if (call.onProgress) call.onProgress(progress); }
+    else if (type === 'result') { pendingWorkerCalls.delete(id); call.resolve(result); }
+    else if (type === 'error') { pendingWorkerCalls.delete(id); call.reject(new Error(error)); }
   };
-
   worker.onerror = (err) => {
     console.error('Worker error:', err);
     for (const [id, call] of pendingWorkerCalls.entries()) {
@@ -254,7 +300,6 @@
       pendingWorkerCalls.delete(id);
     }
   };
-
   function callWorker(action, payload, onProgress) {
     return new Promise((resolve, reject) => {
       const id = ++workerMsgId;
@@ -264,20 +309,33 @@
   }
 
   // ===================================================================
+  //  WAKE LOCK
+  // ===================================================================
+  async function acquireWakeLock() {
+    if (!('wakeLock' in navigator)) return;
+    try {
+      if (wakeLock) return;
+      wakeLock = await navigator.wakeLock.request('screen');
+      wakeLock.addEventListener('release', () => { wakeLock = null; });
+    } catch (e) { /* silencioso */ }
+  }
+  async function releaseWakeLock() {
+    try {
+      if (wakeLock) { await wakeLock.release(); wakeLock = null; }
+    } catch (_) {}
+  }
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible' && state.hasProcessed && els.btnProcess.disabled) {
+      acquireWakeLock();
+    }
+  });
+
+  // ===================================================================
   //  SIDEBAR
   // ===================================================================
-  function isMobile() {
-    return window.matchMedia('(max-width: 720px)').matches;
-  }
-
-  function openSidebar() {
-    els.sidebar.classList.add('open');
-    els.sidebarOverlay.classList.add('visible');
-  }
-  function closeSidebar() {
-    els.sidebar.classList.remove('open');
-    els.sidebarOverlay.classList.remove('visible');
-  }
+  function isMobile() { return window.matchMedia('(max-width: 720px)').matches; }
+  function openSidebar() { els.sidebar.classList.add('open'); els.sidebarOverlay.classList.add('visible'); }
+  function closeSidebar() { els.sidebar.classList.remove('open'); els.sidebarOverlay.classList.remove('visible'); }
   function toggleDesktopSidebar() {
     const collapsed = els.appMain.classList.toggle('sidebar-collapsed');
     localStorage.setItem('sidebarCollapsed', collapsed ? '1' : '0');
@@ -287,46 +345,31 @@
     if (isMobile()) {
       if (els.sidebar.classList.contains('open')) closeSidebar();
       else openSidebar();
-    } else {
-      toggleDesktopSidebar();
-    }
+    } else toggleDesktopSidebar();
   });
   els.btnCloseSidebar.addEventListener('click', closeSidebar);
   els.sidebarOverlay.addEventListener('click', () => {
     if (isMobile()) closeSidebar();
     else {
-      // En escritorio, si estaba colapsado, expandir
       els.appMain.classList.remove('sidebar-collapsed');
       localStorage.setItem('sidebarCollapsed', '0');
     }
   });
 
-  // Restaurar estado del sidebar en escritorio
   (function initSidebarState() {
     if (!isMobile() && localStorage.getItem('sidebarCollapsed') === '1') {
       els.appMain.classList.add('sidebar-collapsed');
     }
   })();
 
-  document.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape' && els.sidebar.classList.contains('open')) {
-      closeSidebar();
-    }
-  });
-
   ['btnProcess', 'btnOpen', 'btnReset', 'btnManageModels',
-   'btnApplyMask', 'btnApplyColor', 'btnApplyFill', 'btnClearFill'].forEach(id => {
+   'btnApplyMask', 'btnApplyColor', 'btnApplyFill', 'btnClearFill',
+   'btnApplyBlur', 'btnClearBlur'].forEach(id => {
     const el = document.getElementById(id);
-    if (el) {
-      el.addEventListener('click', () => {
-        if (isMobile()) setTimeout(closeSidebar, 150);
-      });
-    }
+    if (el) el.addEventListener('click', () => { if (isMobile()) setTimeout(closeSidebar, 150); });
   });
 
-  window.addEventListener('resize', () => {
-    if (!isMobile()) closeSidebar();
-  });
+  window.addEventListener('resize', () => { if (!isMobile()) closeSidebar(); });
 
   // ===================================================================
   //  TEMA
@@ -335,7 +378,6 @@
     const saved = localStorage.getItem('theme') || 'light';
     document.documentElement.setAttribute('data-theme', saved);
   })();
-
   els.themeSwitch.addEventListener('click', () => {
     const cur = document.documentElement.getAttribute('data-theme');
     const next = cur === 'dark' ? 'light' : 'dark';
@@ -345,7 +387,7 @@
   });
 
   // ===================================================================
-  //  FONDO CANVAS
+  //  FONDO CANVAS (checker/solid)
   // ===================================================================
   (function initBgConfig() {
     try {
@@ -358,10 +400,7 @@
     } catch (_) {}
   })();
 
-  function currentTheme() {
-    return document.documentElement.getAttribute('data-theme') || 'light';
-  }
-
+  function currentTheme() { return document.documentElement.getAttribute('data-theme') || 'light'; }
   function applyCanvasBg() {
     const theme = currentTheme();
     const cfg = state.bgConfig[theme];
@@ -374,7 +413,6 @@
       area.style.setProperty('--canvas-bg', theme === 'light' ? '#eef0f5' : '#252938');
     }
   }
-
   function syncBgSectionWithCurrentTheme() {
     const theme = currentTheme();
     const cfg = state.bgConfig[theme];
@@ -385,44 +423,32 @@
     els.bgSolidField.classList.toggle('visible', cfg.mode === 'solid');
     applyCanvasBg();
   }
-
-  function saveBgConfig() {
-    localStorage.setItem('bgConfig', JSON.stringify(state.bgConfig));
-  }
+  function saveBgConfig() { localStorage.setItem('bgConfig', JSON.stringify(state.bgConfig)); }
 
   els.bgModeChecker.addEventListener('change', () => {
-    const theme = currentTheme();
-    state.bgConfig[theme].mode = 'checker';
+    state.bgConfig[currentTheme()].mode = 'checker';
     els.bgSolidField.classList.remove('visible');
-    saveBgConfig();
-    applyCanvasBg();
+    saveBgConfig(); applyCanvasBg();
   });
   els.bgModeSolid.addEventListener('change', () => {
-    const theme = currentTheme();
-    state.bgConfig[theme].mode = 'solid';
+    state.bgConfig[currentTheme()].mode = 'solid';
     els.bgSolidField.classList.add('visible');
-    saveBgConfig();
-    applyCanvasBg();
+    saveBgConfig(); applyCanvasBg();
   });
   els.bgSolidColor.addEventListener('input', (e) => {
     els.bgSolidHex.value = e.target.value;
-    const theme = currentTheme();
-    state.bgConfig[theme].color = e.target.value;
-    saveBgConfig();
-    applyCanvasBg();
+    state.bgConfig[currentTheme()].color = e.target.value;
+    saveBgConfig(); applyCanvasBg();
   });
   els.bgSolidHex.addEventListener('input', (e) => {
     const v = e.target.value;
     if (/^#?[a-f\d]{6}$/i.test(v)) {
       const hex = v.startsWith('#') ? v : '#' + v;
       els.bgSolidColor.value = hex;
-      const theme = currentTheme();
-      state.bgConfig[theme].color = hex;
-      saveBgConfig();
-      applyCanvasBg();
+      state.bgConfig[currentTheme()].color = hex;
+      saveBgConfig(); applyCanvasBg();
     }
   });
-
   document.querySelectorAll('.swatch').forEach(btn => {
     btn.addEventListener('click', () => {
       const color = btn.dataset.color;
@@ -430,31 +456,25 @@
       els.bgSolidHex.value = color;
       els.bgModeSolid.checked = true;
       els.bgSolidField.classList.add('visible');
-      const theme = currentTheme();
-      state.bgConfig[theme].mode = 'solid';
-      state.bgConfig[theme].color = color;
-      saveBgConfig();
-      applyCanvasBg();
+      state.bgConfig[currentTheme()].mode = 'solid';
+      state.bgConfig[currentTheme()].color = color;
+      saveBgConfig(); applyCanvasBg();
     });
   });
 
   els.btnBgApplyLight.addEventListener('click', () => {
-    const isSolid = els.bgModeSolid.checked;
     state.bgConfig.light = {
-      mode: isSolid ? 'solid' : 'checker',
+      mode: els.bgModeSolid.checked ? 'solid' : 'checker',
       color: els.bgSolidColor.value
     };
-    saveBgConfig();
-    setStatus('Fondo aplicado al tema Claro');
+    saveBgConfig(); setStatus('Fondo aplicado al tema Claro');
   });
   els.btnBgApplyDark.addEventListener('click', () => {
-    const isSolid = els.bgModeSolid.checked;
     state.bgConfig.dark = {
-      mode: isSolid ? 'solid' : 'checker',
+      mode: els.bgModeSolid.checked ? 'solid' : 'checker',
       color: els.bgSolidColor.value
     };
-    saveBgConfig();
-    setStatus('Fondo aplicado al tema Oscuro');
+    saveBgConfig(); setStatus('Fondo aplicado al tema Oscuro');
   });
 
   // ===================================================================
@@ -465,7 +485,6 @@
     updateFillUI();
     applyMaskToCurrent();
   });
-
   els.fillColor.addEventListener('input', (e) => {
     els.fillColorHex.value = e.target.value;
     state.fill.color = e.target.value;
@@ -480,13 +499,11 @@
       if (state.fill.enabled) applyMaskToCurrent();
     }
   });
-
   els.fillOpacity.addEventListener('input', (e) => {
     state.fill.opacity = parseInt(e.target.value);
     els.fillOpacityVal.textContent = state.fill.opacity;
     if (state.fill.enabled) applyMaskToCurrent();
   });
-
   document.querySelectorAll('.swatch-fill').forEach(btn => {
     btn.addEventListener('click', () => {
       const color = btn.dataset.color;
@@ -501,7 +518,6 @@
       applyMaskToCurrent();
     });
   });
-
   els.btnFillPickColor.addEventListener('click', () => {
     state.colorPickMode = 'fill';
     els.btnFillPickColor.style.background = 'var(--primary)';
@@ -509,7 +525,6 @@
     els.btnFillPickColor.querySelector('img').style.filter = 'brightness(0) invert(1)';
     setStatus('Clic en la imagen para tomar color de relleno');
   });
-
   els.btnApplyFill.addEventListener('click', () => {
     state.fill.enabled = true;
     els.fillEnabled.checked = true;
@@ -517,7 +532,6 @@
     applyMaskToCurrent();
     setStatus('Fondo rellenado');
   });
-
   els.btnClearFill.addEventListener('click', () => {
     state.fill.enabled = false;
     els.fillEnabled.checked = false;
@@ -525,11 +539,48 @@
     applyMaskToCurrent();
     setStatus('Relleno quitado');
   });
-
   function updateFillUI() {
     const on = !!state.fill.enabled;
     els.btnClearFill.disabled = !state.originalImage || !on;
     els.btnApplyFill.disabled = !state.originalImage;
+  }
+
+  // ===================================================================
+  //  BACKGROUND BLUR (bokeh)
+  // ===================================================================
+  els.blurEnabled.addEventListener('change', (e) => {
+    state.blur.enabled = e.target.checked;
+    updateBlurUI();
+    applyMaskToCurrent();
+  });
+  els.blurAmount.addEventListener('input', (e) => {
+    state.blur.amount = parseInt(e.target.value);
+    els.blurAmountVal.textContent = state.blur.amount;
+    if (state.blur.enabled) applyMaskToCurrent();
+  });
+  els.blurDark.addEventListener('input', (e) => {
+    state.blur.darken = parseInt(e.target.value);
+    els.blurDarkVal.textContent = state.blur.darken;
+    if (state.blur.enabled) applyMaskToCurrent();
+  });
+  els.btnApplyBlur.addEventListener('click', () => {
+    state.blur.enabled = true;
+    els.blurEnabled.checked = true;
+    updateBlurUI();
+    applyMaskToCurrent();
+    setStatus('Desenfoque aplicado');
+  });
+  els.btnClearBlur.addEventListener('click', () => {
+    state.blur.enabled = false;
+    els.blurEnabled.checked = false;
+    updateBlurUI();
+    applyMaskToCurrent();
+    setStatus('Desenfoque quitado');
+  });
+  function updateBlurUI() {
+    const on = !!state.blur.enabled;
+    els.btnClearBlur.disabled = !state.originalImage || !on;
+    els.btnApplyBlur.disabled = !state.originalImage;
   }
 
   // ===================================================================
@@ -550,7 +601,6 @@
   els.helpModal.addEventListener('click', (e) => {
     if (e.target === els.helpModal) els.helpModal.hidden = true;
   });
-
   document.querySelectorAll('.help-tab').forEach(tab => {
     tab.addEventListener('click', () => {
       const target = tab.dataset.tab;
@@ -572,12 +622,11 @@
     els.fileInput.value = '';
   });
 
-  function loadImageFile(file) {
+  async function loadImageFile(file) {
     if (!file.type.startsWith('image/')) {
       alert('Por favor selecciona una imagen válida');
       return;
     }
-    // Mostrar nombre limpio (sin [ID])
     els.fileName.textContent = file.name;
     state.originalFileName = cleanFileName(file.name);
 
@@ -610,19 +659,24 @@
       state.lastBrushPoint = null;
       state.fill.enabled = false;
       els.fillEnabled.checked = false;
+      state.blur.enabled = false;
+      els.blurEnabled.checked = false;
+
+      // Reiniciar historial
+      state.history = [];
+      state.historyIndex = -1;
+      pushMaskHistory();
 
       resizeCanvases();
       fitToView();
       render();
       updateUI();
       updateFillUI();
+      updateBlurUI();
       setStatus('Imagen cargada');
       URL.revokeObjectURL(url);
     };
-    img.onerror = () => {
-      URL.revokeObjectURL(url);
-      alert('No se pudo cargar la imagen');
-    };
+    img.onerror = () => { URL.revokeObjectURL(url); alert('No se pudo cargar la imagen'); };
     img.src = url;
   }
 
@@ -666,14 +720,16 @@
     state.panY = (area.height - img.height * state.zoom) / 2;
     applyTransform();
   }
-
+  function zoomTo(percent) {
+    if (!state.originalImage) return;
+    const area = els.canvasArea.getBoundingClientRect();
+    zoomAtPoint(percent / 100, area.width / 2, area.height / 2);
+  }
   function applyTransform() {
     els.canvasInner.style.transform =
       `translate(${state.panX}px, ${state.panY}px) scale(${state.zoom})`;
     els.zoomVal.textContent = Math.round(state.zoom * 100) + '%';
   }
-
-  // Zoom centrado en un punto del área (coordenadas de pantalla)
   function zoomAtPoint(newZoom, screenX, screenY) {
     newZoom = clamp(newZoom, 0.05, 20);
     const oldZoom = state.zoom;
@@ -692,7 +748,9 @@
     ctx.clearRect(0, 0, els.mainCanvas.width, els.mainCanvas.height);
     if (src) ctx.drawImage(src, 0, 0);
 
+    // Overlay: máscara rosada + preview de shape si está dibujando
     overlayCtx.clearRect(0, 0, els.overlayCanvas.width, els.overlayCanvas.height);
+
     if (state.maskEditorActive && state.maskCanvas) {
       const w = els.overlayCanvas.width;
       const h = els.overlayCanvas.height;
@@ -704,6 +762,34 @@
       tctx.drawImage(state.maskCanvas, 0, 0);
       overlayCtx.drawImage(tmp, 0, 0);
     }
+
+    // Preview rect / lasso
+    if (state.maskEditorActive && state.isDrawingShape) {
+      overlayCtx.save();
+      overlayCtx.strokeStyle = 'rgba(79, 70, 229, 0.95)';
+      overlayCtx.fillStyle = 'rgba(79, 70, 229, 0.20)';
+      overlayCtx.lineWidth = Math.max(1, 2 / state.zoom);
+      overlayCtx.setLineDash([6 / state.zoom, 4 / state.zoom]);
+
+      if (state.activeTool === 'rect' && state.shapeStart && state.shapeCurrent) {
+        const x = Math.min(state.shapeStart.x, state.shapeCurrent.x);
+        const y = Math.min(state.shapeStart.y, state.shapeCurrent.y);
+        const w = Math.abs(state.shapeCurrent.x - state.shapeStart.x);
+        const h = Math.abs(state.shapeCurrent.y - state.shapeStart.y);
+        overlayCtx.fillRect(x, y, w, h);
+        overlayCtx.strokeRect(x, y, w, h);
+      } else if (state.activeTool === 'lasso' && state.lassoPoints.length > 1) {
+        overlayCtx.beginPath();
+        overlayCtx.moveTo(state.lassoPoints[0].x, state.lassoPoints[0].y);
+        for (let i = 1; i < state.lassoPoints.length; i++) {
+          overlayCtx.lineTo(state.lassoPoints[i].x, state.lassoPoints[i].y);
+        }
+        overlayCtx.closePath();
+        overlayCtx.fill();
+        overlayCtx.stroke();
+      }
+      overlayCtx.restore();
+    }
   }
 
   function applyMaskToCurrent() {
@@ -711,21 +797,45 @@
     const w = state.originalCanvas.width;
     const h = state.originalCanvas.height;
 
+    // 1) Preparar máscara como alpha real
     const cut = createCanvas(w, h);
     const cctx = cut.getContext('2d');
     cctx.drawImage(state.originalCanvas, 0, 0);
     cctx.globalCompositeOperation = 'destination-in';
     cctx.drawImage(state.maskCanvas, 0, 0);
 
+    // 2) Preparar el fondo
     const cc = state.currentCanvas.getContext('2d');
     cc.clearRect(0, 0, w, h);
 
-    if (state.fill.enabled) {
-      const rgb = hexToRgb(state.fill.color) || { r: 255, g: 255, b: 255 };
-      const alpha = clamp(state.fill.opacity / 100, 0, 1);
-      cc.fillStyle = `rgba(${rgb.r}, ${rgb.g}, ${rgb.b}, ${alpha})`;
-      cc.fillRect(0, 0, w, h);
+    const backgroundOn = state.fill.enabled || state.blur.enabled;
+
+    if (backgroundOn) {
+      // Crear canvas de fondo
+      const bg = createCanvas(w, h);
+      const bctx = bg.getContext('2d');
+
+      if (state.blur.enabled && state.blur.amount > 0) {
+        // Desenfoque real: usar filter: blur() al dibujar
+        bctx.filter = `blur(${state.blur.amount}px)`;
+        bctx.drawImage(state.originalCanvas, 0, 0);
+        bctx.filter = 'none';
+        // Oscurecer
+        if (state.blur.darken > 0) {
+          bctx.fillStyle = `rgba(0,0,0,${state.blur.darken / 100})`;
+          bctx.fillRect(0, 0, w, h);
+        }
+      } else if (state.fill.enabled) {
+        const rgb = hexToRgb(state.fill.color) || { r: 255, g: 255, b: 255 };
+        const alpha = clamp(state.fill.opacity / 100, 0, 1);
+        bctx.fillStyle = `rgba(${rgb.r}, ${rgb.g}, ${rgb.b}, ${alpha})`;
+        bctx.fillRect(0, 0, w, h);
+      }
+
+      cc.drawImage(bg, 0, 0);
     }
+
+    // 3) Sujeto encima
     cc.drawImage(cut, 0, 0);
 
     state.hasProcessed = true;
@@ -733,6 +843,7 @@
     render();
     updateUI();
     updateFillUI();
+    updateBlurUI();
   }
 
   function updateUI() {
@@ -746,10 +857,77 @@
     els.btnApplyColor.disabled = !hasImg;
     els.btnApplyFill.disabled = !hasImg;
     els.btnClearFill.disabled = !hasImg || !state.fill.enabled;
+    els.btnApplyBlur.disabled = !hasImg;
+    els.btnClearBlur.disabled = !hasImg || !state.blur.enabled;
+    updateUndoRedoUI();
   }
 
   // ===================================================================
-  //  WHEEL (ratón) — zoom con rueda, shift/alt para pan
+  //  HISTORIAL (undo/redo de máscara)
+  // ===================================================================
+  function snapshotMask() {
+    const w = state.maskCanvas.width;
+    const h = state.maskCanvas.height;
+    const c = createCanvas(w, h);
+    c.getContext('2d').drawImage(state.maskCanvas, 0, 0);
+    return c;
+  }
+
+  function pushMaskHistory() {
+    if (state.isPerformingUndoRedo) return;
+    if (!state.maskCanvas) return;
+
+    // Truncar redo
+    state.history = state.history.slice(0, state.historyIndex + 1);
+    state.history.push(snapshotMask());
+    if (state.history.length > state.historyMax) {
+      state.history.shift();
+    } else {
+      state.historyIndex++;
+    }
+    updateUndoRedoUI();
+  }
+
+  function undo() {
+    if (!state.maskEditorActive) return;
+    if (state.historyIndex <= 0) { setStatus('Nada que deshacer'); return; }
+    state.historyIndex--;
+    restoreMaskHistory();
+    setStatus('Deshacer');
+  }
+  function redo() {
+    if (!state.maskEditorActive) return;
+    if (state.historyIndex >= state.history.length - 1) { setStatus('Nada que rehacer'); return; }
+    state.historyIndex++;
+    restoreMaskHistory();
+    setStatus('Rehacer');
+  }
+  function restoreMaskHistory() {
+    const snap = state.history[state.historyIndex];
+    if (!snap) return;
+    state.isPerformingUndoRedo = true;
+    const mctx = state.maskCanvas.getContext('2d');
+    mctx.clearRect(0, 0, state.maskCanvas.width, state.maskCanvas.height);
+    mctx.globalCompositeOperation = 'source-over';
+    mctx.drawImage(snap, 0, 0);
+    state.isPerformingUndoRedo = false;
+    applyMaskToCurrent();
+    if (state.maskEditorActive) render();
+    updateUndoRedoUI();
+  }
+  function updateUndoRedoUI() {
+    if (!els.btnUndo || !els.btnRedo) return;
+    const canUndo = state.maskEditorActive && state.historyIndex > 0;
+    const canRedo = state.maskEditorActive && state.historyIndex < state.history.length - 1;
+    els.btnUndo.disabled = !canUndo;
+    els.btnRedo.disabled = !canRedo;
+  }
+
+  els.btnUndo.addEventListener('click', undo);
+  els.btnRedo.addEventListener('click', redo);
+
+  // ===================================================================
+  //  WHEEL + PAN + POINTER
   // ===================================================================
   els.canvasArea.addEventListener('wheel', (e) => {
     if (!state.originalImage) return;
@@ -763,47 +941,31 @@
     zoomAtPoint(state.zoom * factor, mx, my);
   }, { passive: false });
 
-  // ===================================================================
-  //  POINTER EVENTS (ratón + touch unificado)
-  //  - 1 dedo en modo pan: mover
-  //  - 1 dedo en modo brush/magic/pick: dibujar/seleccionar
-  //  - 2 dedos (siempre): pinch-zoom + pan
-  // ===================================================================
   els.canvasArea.addEventListener('pointerdown', (e) => {
     if (!state.originalImage) return;
-
-    // Guardar pointer activo
     state.activePointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
 
-    // Si hay 2+ pointers, iniciamos pinch y cancelamos cualquier acción de dibujo
     if (state.activePointers.size === 2) {
-      // Cancelar dibujo
       state.isDrawing = false;
       state.lastBrushPoint = null;
-      // Cancelar pan
       state.isPanning = false;
+      state.isDrawingShape = false;
       startPinch();
       try { els.canvasArea.setPointerCapture(e.pointerId); } catch (_) {}
       e.preventDefault();
       return;
     }
 
-    // Con 1 solo pointer
     const isMiddle = e.button === 1;
     const isRight = e.button === 2;
     const isSpace = state.spacePressed;
     const editingMask = state.maskEditorActive;
     const pickingColor = state.colorPickMode;
-
-    // Touch: siempre se comporta como pan (a menos que edición de máscara/pick esté activo)
     const isTouch = e.pointerType === 'touch';
 
     let wantPan;
-    if (isTouch) {
-      wantPan = !editingMask && !pickingColor;
-    } else {
-      wantPan = isMiddle || isRight || isSpace || (!editingMask && !pickingColor);
-    }
+    if (isTouch) wantPan = !editingMask && !pickingColor;
+    else wantPan = isMiddle || isRight || isSpace || (!editingMask && !pickingColor);
 
     if (wantPan) {
       state.isPanning = true;
@@ -814,92 +976,64 @@
       return;
     }
 
-    // Modo edición / pick (solo botón izquierdo o touch)
     if (!isTouch && e.button !== 0) return;
-
     if (pickingColor) { pickColorFromImage(e); return; }
+
     if (editingMask) {
-      if (state.smartSelect) doMagicWand(e);
+      if (state.activeTool === 'wand') doMagicWand(e);
+      else if (state.activeTool === 'rect') startRect(e);
+      else if (state.activeTool === 'lasso') startLasso(e);
       else startBrushStroke(e);
     }
   });
 
   els.canvasArea.addEventListener('pointermove', (e) => {
     if (!state.originalImage) return;
-
-    // Actualizar pointer activo
     if (state.activePointers.has(e.pointerId)) {
       state.activePointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
     }
-
-    // Pinch activo (2 dedos)
-    if (state.activePointers.size >= 2 && state.pinchStart) {
-      updatePinch();
-      return;
-    }
+    if (state.activePointers.size >= 2 && state.pinchStart) { updatePinch(); return; }
 
     updateCursor(e);
 
     if (state.isPanning) {
       const dx = e.clientX - state.lastPointer.x;
       const dy = e.clientY - state.lastPointer.y;
-      state.panX += dx;
-      state.panY += dy;
+      state.panX += dx; state.panY += dy;
       state.lastPointer = { x: e.clientX, y: e.clientY };
       applyTransform();
       return;
     }
-
     if (state.isDrawing) continueBrushStroke(e);
+    if (state.isDrawingShape) continueShape(e);
   });
 
   function endPointer(e) {
     state.activePointers.delete(e.pointerId);
-
-    // Si quedaba un pinch activo y quedan <2 pointers, terminamos pinch
-    if (state.pinchStart && state.activePointers.size < 2) {
-      state.pinchStart = null;
-    }
-
+    if (state.pinchStart && state.activePointers.size < 2) state.pinchStart = null;
     if (state.isPanning && state.activePointers.size === 0) {
       state.isPanning = false;
       els.canvasArea.classList.remove('panning');
       try { els.canvasArea.releasePointerCapture(e.pointerId); } catch (_) {}
     }
-
     if (state.isDrawing && state.activePointers.size === 0) {
       state.isDrawing = false;
       state.lastBrushPoint = null;
+      pushMaskHistory();
+    }
+    if (state.isDrawingShape && state.activePointers.size === 0) {
+      finishShape(e);
     }
   }
-
   els.canvasArea.addEventListener('pointerup', endPointer);
   els.canvasArea.addEventListener('pointercancel', endPointer);
-
   els.canvasArea.addEventListener('pointerleave', () => {
     els.brushCursor.classList.remove('show');
   });
-
-  els.canvasArea.addEventListener('contextmenu', (e) => {
-    if (state.originalImage) e.preventDefault();
-  });
-
-  document.addEventListener('keydown', (e) => {
-    if (e.code === 'Space' && document.activeElement.tagName !== 'INPUT') {
-      state.spacePressed = true;
-      els.canvasArea.style.cursor = 'grab';
-      e.preventDefault();
-    }
-  });
-  document.addEventListener('keyup', (e) => {
-    if (e.code === 'Space') {
-      state.spacePressed = false;
-      els.canvasArea.style.cursor = '';
-    }
-  });
+  els.canvasArea.addEventListener('contextmenu', (e) => { if (state.originalImage) e.preventDefault(); });
 
   // ===================================================================
-  //  PINCH ZOOM (2 dedos)
+  //  PINCH ZOOM
   // ===================================================================
   function startPinch() {
     const pts = Array.from(state.activePointers.values());
@@ -910,17 +1044,11 @@
     const midY = (p1.y + p2.y) / 2;
     const rect = els.canvasArea.getBoundingClientRect();
     state.pinchStart = {
-      dist,
-      zoom: state.zoom,
-      panX: state.panX,
-      panY: state.panY,
-      midX,
-      midY,
-      areaMidX: midX - rect.left,
-      areaMidY: midY - rect.top
+      dist, zoom: state.zoom, panX: state.panX, panY: state.panY,
+      midX, midY,
+      areaMidX: midX - rect.left, areaMidY: midY - rect.top
     };
   }
-
   function updatePinch() {
     if (!state.pinchStart) return;
     const pts = Array.from(state.activePointers.values());
@@ -933,43 +1061,20 @@
     const start = state.pinchStart;
     const scale = dist / start.dist;
     const newZoom = clamp(start.zoom * scale, 0.05, 20);
-
-    // Zoom centrado en el midpoint inicial, con desplazamiento por movimiento de dedos
-    const areaMidX = start.areaMidX;
-    const areaMidY = start.areaMidY;
-
-    // Pan por desplazamiento del midpoint
     const midDx = midX - start.midX;
     const midDy = midY - start.midY;
 
-    // Aplicar zoom centrado en el midpoint inicial
-    state.panX = areaMidX - (areaMidX - start.panX) * (newZoom / start.zoom) + midDx;
-    state.panY = areaMidY - (areaMidY - start.panY) * (newZoom / start.zoom) + midDy;
+    state.panX = start.areaMidX - (start.areaMidX - start.panX) * (newZoom / start.zoom) + midDx;
+    state.panY = start.areaMidY - (start.areaMidY - start.panY) * (newZoom / start.zoom) + midDy;
     state.zoom = newZoom;
     applyTransform();
-  }
-
-  // ===================================================================
-  //  ZOOM FIT
-  // ===================================================================
-  els.btnZoomFit.addEventListener('click', () => {
-    if (!state.originalImage) return;
-    fitToView();
-    setStatus('Ajustado a ventana');
-  });
-
-  function eventToImageCoords(e) {
-    const rect = els.canvasArea.getBoundingClientRect();
-    const x = (e.clientX - rect.left - state.panX) / state.zoom;
-    const y = (e.clientY - rect.top - state.panY) / state.zoom;
-    return { x, y };
   }
 
   // ===================================================================
   //  CURSOR
   // ===================================================================
   function updateCursor(e) {
-    els.canvasArea.classList.remove('brush-mode', 'magic-mode', 'pick-mode');
+    els.canvasArea.classList.remove('brush-mode', 'magic-mode', 'pick-mode', 'crosshair-mode');
     const inPanState = state.spacePressed || state.isPanning;
 
     if (state.colorPickMode && !inPanState) {
@@ -978,11 +1083,17 @@
       return;
     }
     if (state.maskEditorActive && !inPanState) {
-      if (state.smartSelect) {
+      if (state.activeTool === 'wand') {
         els.canvasArea.classList.add('magic-mode');
         els.brushCursor.classList.remove('show');
         return;
       }
+      if (state.activeTool === 'rect' || state.activeTool === 'lasso') {
+        els.canvasArea.classList.add('crosshair-mode');
+        els.brushCursor.classList.remove('show');
+        return;
+      }
+      // brush
       els.canvasArea.classList.add('brush-mode');
       const rect = els.canvasArea.getBoundingClientRect();
       const x = e.clientX - rect.left;
@@ -998,6 +1109,13 @@
     els.brushCursor.classList.remove('show');
   }
 
+  function eventToImageCoords(e) {
+    const rect = els.canvasArea.getBoundingClientRect();
+    const x = (e.clientX - rect.left - state.panX) / state.zoom;
+    const y = (e.clientY - rect.top - state.panY) / state.zoom;
+    return { x, y };
+  }
+
   // ===================================================================
   //  MASK EDITOR toggle
   // ===================================================================
@@ -1006,10 +1124,49 @@
     els.maskEditorBody.classList.toggle('disabled', !state.maskEditorActive);
     if (!state.maskEditorActive) {
       els.brushCursor.classList.remove('show');
-      els.canvasArea.classList.remove('brush-mode', 'magic-mode');
+      els.canvasArea.classList.remove('brush-mode', 'magic-mode', 'crosshair-mode');
+    } else {
+      // Snapshot al entrar al editor
+      pushMaskHistory();
     }
     render();
+    updateUndoRedoUI();
     setStatus(state.maskEditorActive ? 'Editor de máscara activo' : 'Editor desactivado');
+  });
+
+  // ===================================================================
+  //  TOOL SELECT
+  // ===================================================================
+  els.toolGroup.addEventListener('click', (e) => {
+    const btn = e.target.closest('.tool-btn');
+    if (!btn) return;
+    els.toolGroup.querySelectorAll('.tool-btn').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    state.activeTool = btn.dataset.tool;
+
+    // Mostrar/ocultar opciones
+    els.brushSizeField = els.brushSizeField || document.getElementById('brushSizeField');
+    if (state.activeTool === 'brush') {
+      document.getElementById('brushSizeField').style.display = '';
+      els.smartOpts.classList.add('hidden');
+      els.shapeOpts.classList.add('hidden');
+    } else if (state.activeTool === 'wand') {
+      document.getElementById('brushSizeField').style.display = 'none';
+      els.smartOpts.classList.remove('hidden');
+      els.shapeOpts.classList.add('hidden');
+    } else if (state.activeTool === 'rect') {
+      document.getElementById('brushSizeField').style.display = 'none';
+      els.smartOpts.classList.add('hidden');
+      els.shapeOpts.classList.remove('hidden');
+      els.shapeHint.textContent = 'Arrastra para dibujar el rectángulo.';
+    } else if (state.activeTool === 'lasso') {
+      document.getElementById('brushSizeField').style.display = 'none';
+      els.smartOpts.classList.add('hidden');
+      els.shapeOpts.classList.remove('hidden');
+      els.shapeHint.textContent = 'Arrastra para trazar el lazo. Suelta para aplicar.';
+    }
+
+    setStatus('Herramienta: ' + state.activeTool);
   });
 
   // ===================================================================
@@ -1019,11 +1176,6 @@
     if (!state.maskCanvas) return;
     state.isDrawing = true;
     state.lastBrushPoint = null;
-    if (!state.maskBackup) {
-      const b = createCanvas(state.maskCanvas.width, state.maskCanvas.height);
-      b.getContext('2d').drawImage(state.maskCanvas, 0, 0);
-      state.maskBackup = b;
-    }
     paintBrushAt(e);
   }
   function continueBrushStroke(e) { paintBrushAt(e); }
@@ -1062,35 +1214,101 @@
   }
 
   // ===================================================================
+  //  RECTÁNGULO
+  // ===================================================================
+  function startRect(e) {
+    state.isDrawingShape = true;
+    state.shapeStart = eventToImageCoords(e);
+    state.shapeCurrent = { ...state.shapeStart };
+    render();
+  }
+  function continueShape(e) {
+    if (state.activeTool === 'rect') {
+      state.shapeCurrent = eventToImageCoords(e);
+      render();
+    } else if (state.activeTool === 'lasso') {
+      const p = eventToImageCoords(e);
+      // Añadir solo si se ha movido lo suficiente (evitar saturar)
+      const last = state.lassoPoints[state.lassoPoints.length - 1];
+      if (!last || Math.hypot(p.x - last.x, p.y - last.y) > 2) {
+        state.lassoPoints.push(p);
+        render();
+      }
+    }
+  }
+  function finishShape(e) {
+    if (!state.isDrawingShape) return;
+    state.isDrawingShape = false;
+
+    const mctx = state.maskCanvas.getContext('2d');
+    const isAdd = state.brushMode === 'add';
+
+    if (state.activeTool === 'rect' && state.shapeStart && state.shapeCurrent) {
+      const x = Math.min(state.shapeStart.x, state.shapeCurrent.x);
+      const y = Math.min(state.shapeStart.y, state.shapeCurrent.y);
+      const w = Math.abs(state.shapeCurrent.x - state.shapeStart.x);
+      const h = Math.abs(state.shapeCurrent.y - state.shapeStart.y);
+
+      if (w < 1 || h < 1) { state.shapeStart = null; state.shapeCurrent = null; return; }
+
+      if (isAdd) {
+        mctx.globalCompositeOperation = 'source-over';
+        mctx.fillStyle = '#ffffff';
+        mctx.fillRect(x, y, w, h);
+      } else {
+        mctx.globalCompositeOperation = 'destination-out';
+        mctx.fillStyle = 'rgba(0,0,0,1)';
+        mctx.fillRect(x, y, w, h);
+      }
+    } else if (state.activeTool === 'lasso' && state.lassoPoints.length > 2) {
+      const pts = state.lassoPoints;
+      mctx.save();
+      if (isAdd) {
+        mctx.globalCompositeOperation = 'source-over';
+        mctx.fillStyle = '#ffffff';
+      } else {
+        mctx.globalCompositeOperation = 'destination-out';
+        mctx.fillStyle = 'rgba(0,0,0,1)';
+      }
+      mctx.beginPath();
+      mctx.moveTo(pts[0].x, pts[0].y);
+      for (let i = 1; i < pts.length; i++) mctx.lineTo(pts[i].x, pts[i].y);
+      mctx.closePath();
+      mctx.fill();
+      mctx.restore();
+    }
+
+    state.shapeStart = null;
+    state.shapeCurrent = null;
+    state.lassoPoints = [];
+
+    applyMaskToCurrent();
+    if (state.maskEditorActive) render();
+    pushMaskHistory();
+    setStatus('Selección aplicada');
+  }
+
+  // ===================================================================
   //  VARITA MÁGICA
   // ===================================================================
   function doMagicWand(e) {
     if (!state.originalCanvas) return;
-    if (!state.maskBackup) {
-      const b = createCanvas(state.maskCanvas.width, state.maskCanvas.height);
-      b.getContext('2d').drawImage(state.maskCanvas, 0, 0);
-      state.maskBackup = b;
-    }
     const { x, y } = eventToImageCoords(e);
     const sx = Math.floor(x), sy = Math.floor(y);
-    const w = state.originalCanvas.width;
-    const h = state.originalCanvas.height;
+    const w = state.originalCanvas.width, h = state.originalCanvas.height;
     if (sx < 0 || sy < 0 || sx >= w || sy >= h) return;
-
     setStatus('Varita mágica...');
     setTimeout(() => {
       magicWand(sx, sy);
       applyMaskToCurrent();
       if (state.maskEditorActive) render();
+      pushMaskHistory();
       setStatus('Selección aplicada');
     }, 0);
   }
-
   function magicWand(sx, sy) {
-    const w = state.originalCanvas.width;
-    const h = state.originalCanvas.height;
+    const w = state.originalCanvas.width, h = state.originalCanvas.height;
     const imgData = state.originalCanvas.getContext('2d').getImageData(0, 0, w, h).data;
-
     const colorTol = parseInt(els.smartColor.value) / 100;
     const edgeTol = parseInt(els.smartEdge.value) / 100;
     const maxDist = 441.67;
@@ -1106,7 +1324,6 @@
 
     const visited = new Uint8Array(w * h);
     const stack = [[sx, sy]];
-
     const match = (px, py) => {
       const i = (py * w + px) * 4;
       const dr = imgData[i] - sr;
@@ -1116,13 +1333,9 @@
     };
     const fill = (px, py) => {
       const i = (py * w + px) * 4;
-      if (isAdd) {
-        mData[i] = 255; mData[i + 1] = 255; mData[i + 2] = 255; mData[i + 3] = 255;
-      } else {
-        mData[i] = 0; mData[i + 1] = 0; mData[i + 2] = 0; mData[i + 3] = 0;
-      }
+      if (isAdd) { mData[i]=255; mData[i+1]=255; mData[i+2]=255; mData[i+3]=255; }
+      else { mData[i]=0; mData[i+1]=0; mData[i+2]=0; mData[i+3]=0; }
     };
-
     while (stack.length) {
       const [x0, y0] = stack.pop();
       if (x0 < 0 || x0 >= w || y0 < 0 || y0 >= h) continue;
@@ -1134,10 +1347,7 @@
       let xR = x0;
       while (xR < w - 1 && !visited[y0 * w + (xR + 1)] && match(xR + 1, y0)) xR++;
 
-      for (let x = xL; x <= xR; x++) {
-        visited[y0 * w + x] = 1;
-        fill(x, y0);
-      }
+      for (let x = xL; x <= xR; x++) { visited[y0 * w + x] = 1; fill(x, y0); }
 
       for (const yy of [y0 - 1, y0 + 1]) {
         if (yy < 0 || yy >= h) continue;
@@ -1157,21 +1367,18 @@
   //  CANCELAR / APLICAR MÁSCARA
   // ===================================================================
   els.btnCancelMask.addEventListener('click', () => {
-    if (!state.maskBackup) { setStatus('Nada que cancelar'); return; }
-    const mctx = state.maskCanvas.getContext('2d');
-    mctx.clearRect(0, 0, state.maskCanvas.width, state.maskCanvas.height);
-    mctx.globalCompositeOperation = 'source-over';
-    mctx.drawImage(state.maskBackup, 0, 0);
+    if (state.historyIndex <= 0) { setStatus('Nada que cancelar'); return; }
+    // Volver al estado inicial del editor (index 0)
+    state.historyIndex = 0;
+    restoreMaskHistory();
     state.maskBackup = null;
-    applyMaskToCurrent();
-    if (state.maskEditorActive) render();
     setStatus('Edición cancelada');
   });
-
   els.btnApplyMask.addEventListener('click', () => {
     state.maskBackup = null;
     applyMaskToCurrent();
     if (state.maskEditorActive) render();
+    pushMaskHistory();
     setStatus('Máscara aplicada');
   });
 
@@ -1182,20 +1389,16 @@
     const m = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex);
     if (!m) return false;
     state.targetColor = {
-      r: parseInt(m[1], 16),
-      g: parseInt(m[2], 16),
-      b: parseInt(m[3], 16)
+      r: parseInt(m[1], 16), g: parseInt(m[2], 16), b: parseInt(m[3], 16)
     };
     els.targetColor.value = '#' + m[1] + m[2] + m[3];
     return true;
   }
-
   els.targetColor.addEventListener('input', (e) => {
     els.targetColorHex.value = e.target.value;
     updateTargetColorFromHex(e.target.value);
   });
   els.targetColorHex.addEventListener('input', (e) => updateTargetColorFromHex(e.target.value));
-
   els.tolerance.addEventListener('input', (e) => els.toleranceVal.textContent = e.target.value);
   els.edge.addEventListener('input', (e) => els.edgeVal.textContent = e.target.value);
   els.smooth.addEventListener('input', (e) => els.smoothVal.textContent = e.target.value);
@@ -1211,14 +1414,12 @@
     els.btnFillPickColor.querySelector('img').style.filter = '';
     setStatus(state.colorPickMode ? 'Clic en la imagen para tomar color' : 'Listo');
   });
-
   function pickColorFromImage(e) {
     const { x, y } = eventToImageCoords(e);
     const px = Math.floor(x), py = Math.floor(y);
     if (px < 0 || py < 0 || px >= state.originalCanvas.width || py >= state.originalCanvas.height) return;
     const d = state.originalCanvas.getContext('2d').getImageData(px, py, 1, 1).data;
     const hex = '#' + [d[0], d[1], d[2]].map(v => v.toString(16).padStart(2, '0')).join('');
-
     if (state.colorPickMode === 'fill') {
       els.fillColor.value = hex;
       els.fillColorHex.value = hex;
@@ -1244,27 +1445,20 @@
 
   els.btnApplyColor.addEventListener('click', () => {
     if (!state.originalCanvas) return;
-    if (!state.maskBackup) {
-      const b = createCanvas(state.maskCanvas.width, state.maskCanvas.height);
-      b.getContext('2d').drawImage(state.maskCanvas, 0, 0);
-      state.maskBackup = b;
-    }
     setStatus('Eliminando color...');
     setTimeout(() => {
       removeColorFromMask();
       applyMaskToCurrent();
       if (state.maskEditorActive) render();
+      pushMaskHistory();
       setStatus('Color eliminado');
     }, 10);
   });
-
   function removeColorFromMask() {
-    const w = state.originalCanvas.width;
-    const h = state.originalCanvas.height;
+    const w = state.originalCanvas.width, h = state.originalCanvas.height;
     const data = state.originalCanvas.getContext('2d').getImageData(0, 0, w, h).data;
     const mImg = state.maskCanvas.getContext('2d').getImageData(0, 0, w, h);
     const mData = mImg.data;
-
     const tol = parseInt(els.tolerance.value);
     const edge = parseInt(els.edge.value);
     const smooth = parseInt(els.smooth.value);
@@ -1273,26 +1467,21 @@
 
     const matchMask = new Uint8Array(w * h);
     for (let i = 0, p = 0; i < data.length; i += 4, p++) {
-      const dr = data[i] - tr;
-      const dg = data[i + 1] - tg;
-      const db = data[i + 2] - tb;
-      if (Math.sqrt(dr * dr + dg * dg + db * db) <= tolEuclid) matchMask[p] = 1;
+      const dr = data[i] - tr, dg = data[i+1] - tg, db = data[i+2] - tb;
+      if (Math.sqrt(dr*dr + dg*dg + db*db) <= tolEuclid) matchMask[p] = 1;
     }
-
     let smoothed = matchMask;
     if (smooth > 0) smoothed = boxBlur(matchMask, w, h, smooth);
-
     const edgeFactor = edge / 10;
     const threshold = 0.5 - edgeFactor * 0.3;
     for (let p = 0; p < w * h; p++) {
       const di = p * 4;
       if (smoothed[p] > threshold) {
-        mData[di] = 0; mData[di + 1] = 0; mData[di + 2] = 0; mData[di + 3] = 0;
+        mData[di] = 0; mData[di+1] = 0; mData[di+2] = 0; mData[di+3] = 0;
       }
     }
     state.maskCanvas.getContext('2d').putImageData(mImg, 0, 0);
   }
-
   function boxBlur(src, w, h, radius) {
     const out = new Float32Array(w * h);
     const tmp = new Float32Array(w * h);
@@ -1321,7 +1510,7 @@
   }
 
   // ===================================================================
-  //  CONTROLES VARIOS
+  //  CONTROLES
   // ===================================================================
   els.brushSize.addEventListener('input', (e) => {
     state.brushSize = parseInt(e.target.value);
@@ -1334,19 +1523,9 @@
     btn.classList.add('active');
     state.brushMode = btn.dataset.mode;
   });
-  els.smartSelect.addEventListener('change', (e) => {
-    state.smartSelect = e.target.checked;
-    els.smartOpts.classList.toggle('hidden', !e.target.checked);
-    if (e.target.checked) els.brushCursor.classList.remove('show');
-  });
   els.smartColor.addEventListener('input', (e) => els.smartColorVal.textContent = e.target.value);
   els.smartEdge.addEventListener('input', (e) => els.smartEdgeVal.textContent = e.target.value);
-
-  if (els.chkExif) {
-    els.chkExif.addEventListener('change', (e) => {
-      state.copyExif = e.target.checked;
-    });
-  }
+  if (els.chkExif) els.chkExif.addEventListener('change', (e) => { state.copyExif = e.target.checked; });
 
   // ===================================================================
   //  HEADER ACTIONS
@@ -1356,17 +1535,18 @@
     els.btnToggleView.style.background = state.displayOriginal ? 'var(--primary)' : '';
     render();
   });
-
   els.btnCopy.addEventListener('click', async () => {
     try {
       const blob = await new Promise(res => els.mainCanvas.toBlob(res, 'image/png'));
       await navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })]);
       setStatus('Copiado al portapapeles ✓');
-    } catch (err) {
-      setStatus('Error al copiar: ' + err.message);
-    }
+    } catch (err) { setStatus('Error al copiar: ' + err.message); }
   });
-
+  els.btnZoomFit.addEventListener('click', () => {
+    if (!state.originalImage) return;
+    fitToView();
+    setStatus('Ajustado a ventana');
+  });
   els.btnReset.addEventListener('click', () => {
     if (!state.originalCanvas) return;
     const cctx = state.currentCanvas.getContext('2d');
@@ -1378,10 +1558,17 @@
     state.maskBackup = null;
     state.fill.enabled = false;
     els.fillEnabled.checked = false;
+    state.blur.enabled = false;
+    els.blurEnabled.checked = false;
     els.btnToggleView.style.background = '';
+    // Reiniciar historial
+    state.history = [];
+    state.historyIndex = -1;
+    pushMaskHistory();
     render();
     updateUI();
     updateFillUI();
+    updateBlurUI();
     setStatus('Reiniciado');
   });
 
@@ -1390,11 +1577,8 @@
   // ===================================================================
   els.btnSave.addEventListener('click', async () => {
     if (!state.originalCanvas) return;
-    if (typeof window.showSaveFilePicker === 'function') {
-      await saveWithFilePicker();
-    } else {
-      saveWithFallback();
-    }
+    if (typeof window.showSaveFilePicker === 'function') await saveWithFilePicker();
+    else saveWithFallback();
   });
 
   async function saveWithFilePicker() {
@@ -1419,14 +1603,10 @@
         if (quality === null) return;
         quality = quality / 100;
       }
-
       let blob = await new Promise(res => els.mainCanvas.toBlob(res, mime, quality));
-
       if (mime === 'image/jpeg' && state.copyExif) {
-        try { blob = await injectExif(blob); }
-        catch (e) { console.warn('No se pudo inyectar EXIF:', e); }
+        try { blob = await injectExif(blob); } catch (e) { console.warn(e); }
       }
-
       const writable = await handle.createWritable();
       await writable.write(blob);
       await writable.close();
@@ -1436,36 +1616,25 @@
       setStatus('Error al guardar: ' + err.message);
     }
   }
-
   function saveWithFallback() {
-    const format = prompt(
-      'Formato de salida:\n1 = PNG\n2 = JPG\n3 = WebP\n4 = BMP',
-      '1'
-    );
+    const format = prompt('Formato de salida:\n1 = PNG\n2 = JPG\n3 = WebP\n4 = BMP', '1');
     if (!format) return;
     let ext = 'png', mime = 'image/png', quality;
     if (format === '2') { ext = 'jpg'; mime = 'image/jpeg'; }
     else if (format === '3') { ext = 'webp'; mime = 'image/webp'; }
     else if (format === '4') { ext = 'bmp'; mime = 'image/bmp'; }
-
     if (mime === 'image/jpeg') {
       askJpgQuality().then(q => {
         if (q === null) return;
         doFallbackSave(ext, mime, q / 100);
       });
-    } else {
-      doFallbackSave(ext, mime, undefined);
-    }
+    } else doFallbackSave(ext, mime, undefined);
   }
-
   async function doFallbackSave(ext, mime, quality) {
     let blob = await new Promise(res => els.mainCanvas.toBlob(res, mime, quality));
-
     if (mime === 'image/jpeg' && state.copyExif) {
-      try { blob = await injectExif(blob); }
-      catch (e) { console.warn('No se pudo inyectar EXIF:', e); }
+      try { blob = await injectExif(blob); } catch (e) { console.warn(e); }
     }
-
     const a = document.createElement('a');
     a.download = `${state.originalFileName}-sin-fondo.${ext}`;
     a.href = URL.createObjectURL(blob);
@@ -1473,18 +1642,13 @@
     setTimeout(() => URL.revokeObjectURL(a.href), 2000);
     setStatus('Guardado ✓');
   }
-
   function askJpgQuality() {
     return new Promise((resolve) => {
       els.jpgModal.hidden = false;
       els.jpgQualityVal.textContent = els.jpgQuality.value;
       els.chkExif.checked = state.copyExif;
       const onInput = () => els.jpgQualityVal.textContent = els.jpgQuality.value;
-      const onConfirm = () => {
-        state.copyExif = els.chkExif.checked;
-        cleanup();
-        resolve(parseInt(els.jpgQuality.value));
-      };
+      const onConfirm = () => { state.copyExif = els.chkExif.checked; cleanup(); resolve(parseInt(els.jpgQuality.value)); };
       const onCancel = () => { cleanup(); resolve(null); };
       const cleanup = () => {
         els.jpgModal.hidden = true;
@@ -1514,9 +1678,9 @@
       if (marker === 0xE1) {
         const start = i + 4;
         if (start + 6 <= bytes.length &&
-            bytes[start] === 0x45 && bytes[start + 1] === 0x78 &&
-            bytes[start + 2] === 0x69 && bytes[start + 3] === 0x66 &&
-            bytes[start + 4] === 0x00 && bytes[start + 5] === 0x00) {
+            bytes[start] === 0x45 && bytes[start+1] === 0x78 &&
+            bytes[start+2] === 0x69 && bytes[start+3] === 0x66 &&
+            bytes[start+4] === 0x00 && bytes[start+5] === 0x00) {
           return bytes.slice(i, i + 2 + len);
         }
       }
@@ -1524,17 +1688,14 @@
     }
     return null;
   }
-
   function insertExifIntoJpeg(jpegBytes, exifSegment) {
     if (!exifSegment || !exifSegment.length) return jpegBytes;
     const out = new Uint8Array(2 + exifSegment.length + (jpegBytes.length - 2));
-    out[0] = jpegBytes[0];
-    out[1] = jpegBytes[1];
+    out[0] = jpegBytes[0]; out[1] = jpegBytes[1];
     out.set(exifSegment, 2);
     out.set(jpegBytes.subarray(2), 2 + exifSegment.length);
     return out;
   }
-
   async function injectExif(newJpegBlob) {
     if (!originalFileBuffer) return newJpegBlob;
     const origBytes = new Uint8Array(originalFileBuffer);
@@ -1556,17 +1717,14 @@
   els.modelsModal.addEventListener('click', (e) => {
     if (e.target === els.modelsModal) els.modelsModal.hidden = true;
   });
-
   async function renderModelsList() {
     const metas = await ModelDB.listMeta();
     const est = await ModelDB.estimate();
     els.modelsStorage.textContent = `Usado: ${formatBytes(est.usage || 0)} / ${formatBytes(est.quota || 0)}`;
-
     if (!metas.length) {
       els.modelsList.innerHTML = `<p class="empty-models">No hay modelos descargados aún. Se descargarán automáticamente al procesar una imagen.</p>`;
       return;
     }
-
     els.modelsList.innerHTML = '';
     for (const meta of metas) {
       const row = document.createElement('div');
@@ -1578,11 +1736,9 @@
         </div>
         <button class="icon-btn small" title="Eliminar" data-key="${meta.key}">
           <img src="icons/remove.png" alt="" />
-        </button>
-      `;
+        </button>`;
       els.modelsList.appendChild(row);
     }
-
     els.modelsList.querySelectorAll('button[data-key]').forEach(btn => {
       btn.addEventListener('click', async () => {
         const key = btn.dataset.key;
@@ -1616,7 +1772,7 @@
   els.progressCancel.addEventListener('click', () => hideProgress());
 
   // ===================================================================
-  //  IA
+  //  IA (con Wake Lock durante el procesamiento)
   // ===================================================================
   els.btnProcess.addEventListener('click', async () => {
     if (!state.originalCanvas) return;
@@ -1627,6 +1783,7 @@
 
     const t0 = performance.now();
     setStatus('Procesando...');
+    await acquireWakeLock();
 
     try {
       let modelBuffer = null;
@@ -1646,10 +1803,8 @@
       if (!modelBuffer) {
         const urls = MODEL_SOURCES[modelKey];
         if (!urls || !urls.length) throw new Error('Modelo desconocido: ' + modelKey);
-
         showProgress(`Descargando ${modelKey}...`);
         setStatus('Descargando modelo...');
-
         let lastError = null;
         for (let i = 0; i < urls.length; i++) {
           const url = urls[i];
@@ -1664,27 +1819,23 @@
             lastError = err;
           }
         }
-
         hideProgress();
-
         if (!modelBuffer) {
           throw new Error('No se pudo descargar el modelo. ' +
-                          (lastError ? lastError.message : '') +
-                          '\n\nVerifica tu conexión a internet.');
+            (lastError ? lastError.message : '') +
+            '\n\nVerifica tu conexión a internet.');
         }
-
         setStatus('Guardando modelo en el dispositivo...');
         try {
           await ModelDB.saveModel(modelKey, modelBuffer, {
             key: modelKey, label: modelKey, size: modelBuffer.byteLength, date: Date.now()
           });
-        } catch (saveErr) { console.warn('No se pudo guardar en IndexedDB:', saveErr); }
+        } catch (saveErr) { console.warn('No se pudo guardar:', saveErr); }
       }
 
       if (fromCache) setStatus('Modelo cargado desde caché');
-
       setStatus('Ejecutando IA...');
-      els.processStatus.textContent = 'Inferencia ONNX...';
+      els.processStatus.textContent = 'Inferencia...';
 
       const imageBitmap = await createImageBitmap(state.originalCanvas);
       const modelBufferCopy = modelBuffer.slice(0);
@@ -1694,6 +1845,7 @@
       applyMaskResult(result.mask, result.width, result.height);
       applyMaskToCurrent();
       if (state.maskEditorActive) render();
+      pushMaskHistory();
 
       const dt = ((performance.now() - t0) / 1000).toFixed(2);
       setStatus(`Fondo removido en ${dt} s`);
@@ -1703,12 +1855,13 @@
       hideProgress();
       setStatus('Error: ' + err.message);
       els.processStatus.textContent = 'Error';
-      alert('Error al procesar:\n\n' + err.message +
-            '\n\nSe aplicará el modo demo heurístico como respaldo.');
+      alert('Error al procesar:\n\n' + err.message + '\n\nSe aplicará el modo demo heurístico como respaldo.');
       heuristicSegmentation();
       applyMaskToCurrent();
       if (state.maskEditorActive) render();
+      pushMaskHistory();
     } finally {
+      await releaseWakeLock();
       els.btnProcess.disabled = false;
       updateUI();
     }
@@ -1720,15 +1873,12 @@
     const sImg = sctx.createImageData(mw, mh);
     for (let i = 0; i < mw * mh; i++) {
       const v = maskArray[i];
-      sImg.data[i * 4] = 255;
-      sImg.data[i * 4 + 1] = 255;
-      sImg.data[i * 4 + 2] = 255;
-      sImg.data[i * 4 + 3] = v;
+      sImg.data[i*4] = 255; sImg.data[i*4+1] = 255;
+      sImg.data[i*4+2] = 255; sImg.data[i*4+3] = v;
     }
     sctx.putImageData(sImg, 0, 0);
 
-    const w = state.maskCanvas.width;
-    const h = state.maskCanvas.height;
+    const w = state.maskCanvas.width, h = state.maskCanvas.height;
     const mctx = state.maskCanvas.getContext('2d');
     mctx.globalCompositeOperation = 'source-over';
     mctx.clearRect(0, 0, w, h);
@@ -1737,43 +1887,122 @@
   }
 
   function heuristicSegmentation() {
-    const w = state.originalCanvas.width;
-    const h = state.originalCanvas.height;
+    const w = state.originalCanvas.width, h = state.originalCanvas.height;
     const data = state.originalCanvas.getContext('2d').getImageData(0, 0, w, h).data;
-
     let br = 0, bg = 0, bb = 0, n = 0;
     for (let x = 0; x < w; x++) {
-      const top = x * 4;
-      const bot = ((h - 1) * w + x) * 4;
-      br += data[top]; bg += data[top + 1]; bb += data[top + 2]; n++;
-      br += data[bot]; bg += data[bot + 1]; bb += data[bot + 2]; n++;
+      const top = x * 4, bot = ((h - 1) * w + x) * 4;
+      br += data[top]; bg += data[top+1]; bb += data[top+2]; n++;
+      br += data[bot]; bg += data[bot+1]; bb += data[bot+2]; n++;
     }
     for (let y = 0; y < h; y++) {
-      const left = (y * w) * 4;
-      const right = (y * w + w - 1) * 4;
-      br += data[left]; bg += data[left + 1]; bb += data[left + 2]; n++;
-      br += data[right]; bg += data[right + 1]; bb += data[right + 2]; n++;
+      const left = (y * w) * 4, right = (y * w + w - 1) * 4;
+      br += data[left]; bg += data[left+1]; bb += data[left+2]; n++;
+      br += data[right]; bg += data[right+1]; bb += data[right+2]; n++;
     }
     br /= n; bg /= n; bb /= n;
-
     const mctx = state.maskCanvas.getContext('2d');
     const mImg = mctx.getImageData(0, 0, w, h);
     const mData = mImg.data;
     const tol = 60;
-
     for (let i = 0, p = 0; i < data.length; i += 4, p++) {
-      const dr = data[i] - br;
-      const dg = data[i + 1] - bg;
-      const db = data[i + 2] - bb;
-      const dist = Math.sqrt(dr * dr + dg * dg + db * db);
-      if (dist < tol) {
-        mData[i] = 0; mData[i + 1] = 0; mData[i + 2] = 0; mData[i + 3] = 0;
-      } else {
-        mData[i] = 255; mData[i + 1] = 255; mData[i + 2] = 255; mData[i + 3] = 255;
-      }
+      const dr = data[i] - br, dg = data[i+1] - bg, db = data[i+2] - bb;
+      const dist = Math.sqrt(dr*dr + dg*dg + db*db);
+      if (dist < tol) { mData[i]=0; mData[i+1]=0; mData[i+2]=0; mData[i+3]=0; }
+      else { mData[i]=255; mData[i+1]=255; mData[i+2]=255; mData[i+3]=255; }
     }
     mctx.putImageData(mImg, 0, 0);
   }
+
+  // ===================================================================
+  //  ATAJOS DE TECLADO GLOBALES
+  // ===================================================================
+  document.addEventListener('keydown', (e) => {
+    const isInput = ['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement.tagName);
+    if (isInput && !e.ctrlKey && !e.metaKey) return;
+
+    // Espacio → pan
+    if (e.code === 'Space' && !isInput) {
+      state.spacePressed = true;
+      els.canvasArea.style.cursor = 'grab';
+      e.preventDefault();
+      return;
+    }
+
+    // Ctrl/Cmd combos
+    const mod = e.ctrlKey || e.metaKey;
+    if (mod) {
+      switch (e.key.toLowerCase()) {
+        case 'o':
+          e.preventDefault();
+          els.fileInput.click();
+          return;
+        case 's':
+          e.preventDefault();
+          if (!els.btnSave.disabled) els.btnSave.click();
+          return;
+        case 'c':
+          if (!els.btnCopy.disabled && !window.getSelection().toString()) {
+            e.preventDefault();
+            els.btnCopy.click();
+          }
+          return;
+        case 'z':
+          e.preventDefault();
+          undo();
+          return;
+        case 'y':
+          e.preventDefault();
+          redo();
+          return;
+      }
+      return;
+    }
+
+    // Sin modificadores
+    switch (e.key) {
+      case '+': case '=':
+        e.preventDefault();
+        if (state.originalImage) {
+          const area = els.canvasArea.getBoundingClientRect();
+          zoomAtPoint(state.zoom * 1.2, area.width / 2, area.height / 2);
+        }
+        return;
+      case '-': case '_':
+        e.preventDefault();
+        if (state.originalImage) {
+          const area = els.canvasArea.getBoundingClientRect();
+          zoomAtPoint(state.zoom / 1.2, area.width / 2, area.height / 2);
+        }
+        return;
+      case '0':
+        e.preventDefault();
+        if (state.originalImage) fitToView();
+        return;
+      case '1':
+        e.preventDefault();
+        if (state.originalImage) zoomTo(100);
+        return;
+      case '[':
+        e.preventDefault();
+        state.brushSize = clamp(state.brushSize - 5, 1, 100);
+        els.brushSize.value = state.brushSize;
+        els.brushSizeVal.textContent = state.brushSize;
+        return;
+      case ']':
+        e.preventDefault();
+        state.brushSize = clamp(state.brushSize + 5, 1, 100);
+        els.brushSize.value = state.brushSize;
+        els.brushSizeVal.textContent = state.brushSize;
+        return;
+    }
+  });
+  document.addEventListener('keyup', (e) => {
+    if (e.code === 'Space') {
+      state.spacePressed = false;
+      els.canvasArea.style.cursor = '';
+    }
+  });
 
   // ===================================================================
   //  PWA / DRAG-DROP / PASTE
@@ -1783,14 +2012,12 @@
       navigator.serviceWorker.register('sw.js').catch(err => console.warn(err));
     });
   }
-
   document.addEventListener('dragover', (e) => e.preventDefault());
   document.addEventListener('drop', (e) => {
     e.preventDefault();
     const file = e.dataTransfer.files[0];
     if (file) loadImageFile(file);
   });
-
   document.addEventListener('paste', (e) => {
     const items = e.clipboardData?.items;
     if (!items) return;
@@ -1803,6 +2030,58 @@
   });
 
   // ===================================================================
+  //  SHARE TARGET API (recibir archivos compartidos)
+  // ===================================================================
+  (async function initShareTarget() {
+    try {
+      if (!navigator.serviceWorker || !navigator.serviceWorker.controller) {
+        // Esperar a que el SW tome el control
+        await new Promise(r => setTimeout(r, 800));
+      }
+      const params = new URLSearchParams(location.search);
+      // Soportamos dos formas: ?shared=1 con caché del SW, o ?url=... con un archivo público
+      if (params.get('shared') === '1') {
+        // Pedir al SW los archivos compartidos
+        const reg = await navigator.serviceWorker.ready;
+        const files = await new Promise((resolve) => {
+          const channel = new MessageChannel();
+          channel.port1.onmessage = (ev) => resolve(ev.data);
+          reg.active.postMessage({ type: 'get-shared-files' }, [channel.port2]);
+        });
+        if (files && files.length) {
+          const file = files[0];
+          // Convertir a File si viene como objeto {name, type, buffer}
+          const blob = new Blob([file.buffer], { type: file.type || 'image/png' });
+          const f = new File([blob], file.name || 'imagen-compartida.png', { type: blob.type });
+          loadImageFile(f);
+          // Limpiar la URL
+          history.replaceState({}, '', location.pathname);
+          setStatus('Imagen recibida desde otra app');
+        }
+      }
+    } catch (e) {
+      console.warn('Share Target init falló:', e);
+    }
+  })();
+
+  // ===================================================================
+  //  FILE HANDLING API (abrir con…)
+  // ===================================================================
+  (async function initFileHandling() {
+    try {
+      if (!('launchQueue' in window)) return;
+      window.launchQueue.setConsumer(async (launchParams) => {
+        if (!launchParams.files || !launchParams.files.length) return;
+        const handle = launchParams.files[0];
+        const file = await handle.getFile();
+        loadImageFile(file);
+      });
+    } catch (e) {
+      console.warn('File Handling init falló:', e);
+    }
+  })();
+
+  // ===================================================================
   //  INIT
   // ===================================================================
   els.brushSizeVal.textContent = els.brushSize.value;
@@ -1812,20 +2091,38 @@
   els.edgeVal.textContent = els.edge.value;
   els.smoothVal.textContent = els.smooth.value;
   els.fillOpacityVal.textContent = els.fillOpacity.value;
+  els.blurAmountVal.textContent = els.blurAmount.value;
+  els.blurDarkVal.textContent = els.blurDark.value;
   state.brushSize = parseInt(els.brushSize.value);
   state.fill.color = els.fillColor.value;
   state.fill.opacity = parseInt(els.fillOpacity.value);
+  state.blur.amount = parseInt(els.blurAmount.value);
+  state.blur.darken = parseInt(els.blurDark.value);
 
   syncBgSectionWithCurrentTheme();
   applyCanvasBg();
 
   ModelDB.requestPersistence().then(granted => {
-    if (granted) console.log('[ModelDB] Almacenamiento persistente concedido');
-    else console.log('[ModelDB] Persistencia no concedida');
+    console.log('[ModelDB] Persistencia:', granted ? 'concedida' : 'no concedida');
   });
+
+  // Detectar WebGPU (pasarlo al worker)
+  (async () => {
+    try {
+      if (navigator.gpu) {
+        const adapter = await navigator.gpu.requestAdapter();
+        if (adapter) {
+          worker.postMessage({ type: 'enable-webgpu' });
+          console.log('[WebGPU] Adaptador disponible');
+        }
+      }
+    } catch (e) { console.warn('WebGPU no disponible:', e); }
+  })();
 
   updateUI();
   updateFillUI();
+  updateBlurUI();
+  updateUndoRedoUI();
   setStatus('Listo para comenzar');
 
 })();
