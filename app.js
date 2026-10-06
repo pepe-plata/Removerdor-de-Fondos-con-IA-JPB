@@ -1,5 +1,5 @@
 // ===================================================================
-//  BG Remover AI — PWA (v8)
+//  Removedor de Fondos con IA JPB — PWA (v9)
 //  HTML + CSS + JS puro. Sin frameworks.
 // ===================================================================
 
@@ -21,7 +21,6 @@
         setTimeout(() => { splashEl.style.display = 'none'; }, 450);
       }, remaining);
     });
-    // Fallback: por si 'load' no se dispara (ej. sin SW), forzar tras 3s
     setTimeout(() => {
       if (!splashEl.classList.contains('hide')) {
         splashEl.classList.add('hide');
@@ -58,7 +57,6 @@
     maskBackup: null,
     copyExif: false,
 
-    // Relleno de fondo
     fill: {
       enabled: false,
       color: '#ffffff',
@@ -71,7 +69,6 @@
     }
   };
 
-  // URLs de descarga con fallback
   const MODEL_SOURCES = {
     'u2net': [
       'https://huggingface.co/tomjackson2023/rembg/resolve/main/u2net.onnx',
@@ -102,6 +99,10 @@
   const els = {
     fileName: $('fileName'),
     themeSwitch: $('themeSwitch'),
+    btnMenu: $('btnMenu'),
+    btnCloseSidebar: $('btnCloseSidebar'),
+    sidebar: $('sidebar'),
+    sidebarOverlay: $('sidebarOverlay'),
     btnHelp: $('btnHelp'),
     btnToggleView: $('btnToggleView'),
     btnCopy: $('btnCopy'),
@@ -135,7 +136,6 @@
     smooth: $('smooth'),
     smoothVal: $('smoothVal'),
     btnApplyColor: $('btnApplyColor'),
-    // Fill
     fillEnabled: $('fillEnabled'),
     fillColor: $('fillColor'),
     fillColorHex: $('fillColorHex'),
@@ -144,9 +144,7 @@
     fillOpacityVal: $('fillOpacityVal'),
     btnApplyFill: $('btnApplyFill'),
     btnClearFill: $('btnClearFill'),
-    // Reset
     btnReset: $('btnReset'),
-    // Canvas
     canvasArea: $('canvasArea'),
     canvasViewport: $('canvasViewport'),
     canvasInner: $('canvasInner'),
@@ -157,7 +155,6 @@
     dims: $('dims'),
     zoomVal: $('zoomVal'),
     statusMsg: $('statusMsg'),
-    // Modales
     jpgModal: $('jpgModal'),
     jpgQuality: $('jpgQuality'),
     jpgQualityVal: $('jpgQualityVal'),
@@ -175,7 +172,6 @@
     progressCancel: $('progressCancel'),
     helpModal: $('helpModal'),
     helpClose: $('helpClose'),
-    // BG canvas
     bgModeChecker: $('bgModeChecker'),
     bgModeSolid: $('bgModeSolid'),
     bgSolidField: $('bgSolidField'),
@@ -251,6 +247,80 @@
       worker.postMessage({ id, action, payload });
     });
   }
+
+  // ===================================================================
+  //  SIDEBAR MÓVIL (drawer)
+  // ===================================================================
+  function isMobile() {
+    return window.matchMedia('(max-width: 720px)').matches;
+  }
+
+  function openSidebar() {
+    els.sidebar.classList.add('open');
+    els.sidebarOverlay.classList.add('visible');
+  }
+
+  function closeSidebar() {
+    els.sidebar.classList.remove('open');
+    els.sidebarOverlay.classList.remove('visible');
+  }
+
+  function toggleSidebar() {
+    if (els.sidebar.classList.contains('open')) closeSidebar();
+    else openSidebar();
+  }
+
+  els.btnMenu.addEventListener('click', toggleSidebar);
+  els.btnCloseSidebar.addEventListener('click', closeSidebar);
+  els.sidebarOverlay.addEventListener('click', closeSidebar);
+
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && els.sidebar.classList.contains('open')) {
+      closeSidebar();
+    }
+  });
+
+  ['btnProcess', 'btnOpen', 'btnReset', 'btnManageModels',
+   'btnApplyMask', 'btnApplyColor', 'btnApplyFill', 'btnClearFill'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) {
+      el.addEventListener('click', () => {
+        if (isMobile()) setTimeout(closeSidebar, 150);
+      });
+    }
+  });
+
+  // Swipe gestures
+  (function initSwipeGestures() {
+    let startX = 0, startY = 0, tracking = false;
+
+    document.addEventListener('touchstart', (e) => {
+      if (!isMobile() || e.touches.length !== 1) return;
+      const t = e.touches[0];
+      startX = t.clientX;
+      startY = t.clientY;
+      tracking = true;
+    }, { passive: true });
+
+    document.addEventListener('touchend', (e) => {
+      if (!tracking || !isMobile()) return;
+      tracking = false;
+      const t = e.changedTouches[0];
+      const dx = t.clientX - startX;
+      const dy = t.clientY - startY;
+      if (Math.abs(dx) < 60 || Math.abs(dy) > Math.abs(dx)) return;
+
+      if (dx > 0 && startX < 30 && !els.sidebar.classList.contains('open')) {
+        openSidebar();
+      } else if (dx < 0 && els.sidebar.classList.contains('open')) {
+        closeSidebar();
+      }
+    }, { passive: true });
+  })();
+
+  window.addEventListener('resize', () => {
+    if (!isMobile()) closeSidebar();
+  });
 
   // ===================================================================
   //  TEMA
@@ -382,12 +452,11 @@
   });
 
   // ===================================================================
-  //  FILL BACKGROUND (relleno de fondo con color)
+  //  FILL BACKGROUND
   // ===================================================================
   els.fillEnabled.addEventListener('change', (e) => {
     state.fill.enabled = e.target.checked;
     updateFillUI();
-    // Re-render con/sin relleno
     applyMaskToCurrent();
   });
 
@@ -428,7 +497,6 @@
   });
 
   els.btnFillPickColor.addEventListener('click', () => {
-    // Reutilizamos el modo pick color, pero con target = fill
     state.colorPickMode = 'fill';
     els.btnFillPickColor.style.background = 'var(--primary)';
     els.btnFillPickColor.style.color = '#fff';
@@ -624,24 +692,17 @@
     }
   }
 
-  /**
-   * Aplica máscara a currentCanvas.
-   * Si el relleno de fondo está activo, primero pinta un fondo del color elegido
-   * y luego compone la imagen recortada sobre él.
-   */
   function applyMaskToCurrent() {
     if (!state.originalCanvas || !state.maskCanvas) return;
     const w = state.originalCanvas.width;
     const h = state.originalCanvas.height;
 
-    // 1) Generar imagen recortada (foreground con alpha) en canvas temporal
     const cut = createCanvas(w, h);
     const cctx = cut.getContext('2d');
     cctx.drawImage(state.originalCanvas, 0, 0);
     cctx.globalCompositeOperation = 'destination-in';
     cctx.drawImage(state.maskCanvas, 0, 0);
 
-    // 2) Componer sobre currentCanvas
     const cc = state.currentCanvas.getContext('2d');
     cc.clearRect(0, 0, w, h);
 
@@ -1014,7 +1075,6 @@
     els.btnPickColor.style.color = state.colorPickMode ? '#fff' : '';
     if (state.colorPickMode) els.btnPickColor.querySelector('img').style.filter = 'brightness(0) invert(1)';
     else els.btnPickColor.querySelector('img').style.filter = '';
-    // reset fill pick button
     els.btnFillPickColor.style.background = '';
     els.btnFillPickColor.style.color = '';
     els.btnFillPickColor.querySelector('img').style.filter = '';

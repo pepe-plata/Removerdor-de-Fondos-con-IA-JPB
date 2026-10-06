@@ -12,7 +12,7 @@
 
 <!-- ================= SPLASH ================= -->
 <div id="splash" class="splash">
-  <img src="icons/icon-512.png" alt="BG Remover AI" class="splash-logo" />
+  <img src="icons/icon-512.png" alt="Removedor de Fondos con IA JPB" class="splash-logo" />
   <h1 class="splash-title">Removedor de Fondos con IA JPB</h1>
   <p class="splash-sub">Remueve fondos con IA local</p>
 </div>
@@ -20,7 +20,9 @@
 <!-- ================= HEADER ================= -->
 <header class="app-header">
   <div class="header-left">
-    <img src="icons/icon-64.png" alt="" class="app-logo" />
+    <button id="btnMenu" class="icon-btn menu-btn" title="Menú">
+      <span class="menu-icon">☰</span>
+    </button>
     <span id="fileName" class="file-name">Sin archivo</span>
   </div>
   <div class="header-right">
@@ -53,6 +55,13 @@
 <main class="app-main">
   <!-- SIDEBAR PANEL -->
   <aside class="sidebar" id="sidebar">
+    <div class="sidebar-header">
+      <span class="sidebar-title">Secciones</span>
+      <button id="btnCloseSidebar" class="icon-btn small" title="Cerrar">
+        <img src="icons/cancel.png" alt="" />
+      </button>
+    </div>
+
     <div class="panel-section">
       <h2 class="icon-title">
         <img src="icons/aimodel.png" alt="" class="section-icon" />
@@ -175,7 +184,7 @@
       </div>
     </div>
 
-    <!-- FILL BACKGROUND (nueva sección) -->
+    <!-- FILL BACKGROUND -->
     <div class="panel-section collapsible" data-section="fill">
       <h2 class="section-title">
         <span class="icon-title">
@@ -289,6 +298,9 @@
     </div>
   </aside>
 
+  <!-- OVERLAY para móvil -->
+  <div class="sidebar-overlay" id="sidebarOverlay"></div>
+
   <!-- CANVAS AREA -->
   <section class="canvas-area" id="canvasArea">
     <div class="empty-state" id="emptyState">
@@ -384,7 +396,6 @@
     </div>
 
     <div class="help-content">
-      <!-- ANDROID -->
       <div class="help-panel active" data-panel="android">
         <h4>Instalar como app</h4>
         <ol>
@@ -418,13 +429,12 @@
         </ul>
       </div>
 
-      <!-- WINDOWS -->
       <div class="help-panel" data-panel="windows">
         <h4>Instalar como app</h4>
         <ol>
           <li>Abre esta página en <b>Chrome</b> o <b>Edge</b> en Windows.</li>
           <li>En la barra de direcciones aparecerá un icono <b>⊕ Instalar</b>. Púlsalo.</li>
-          <li>O ve al menú <b>⋮</b> → <b>Instalar BG Remover AI</b>.</li>
+          <li>O ve al menú <b>⋮</b> → <b>Instalar Removedor de Fondos con IA JPB</b>.</li>
           <li>La app se abrirá en su propia ventana sin barras del navegador.</li>
         </ol>
 
@@ -453,10 +463,9 @@
         </ul>
       </div>
 
-      <!-- GENERAL -->
       <div class="help-panel" data-panel="general">
         <h4>¿Cómo funciona?</h4>
-        <p>BG Remover AI usa modelos <b>ONNX</b> que se ejecutan <b>localmente</b> en tu dispositivo. Ninguna imagen se sube a ningún servidor.</p>
+        <p>Removedor de Fondos con IA JPB usa modelos <b>ONNX</b> que se ejecutan <b>localmente</b> en tu dispositivo. Ninguna imagen se sube a ningún servidor.</p>
 
         <h4>Modelos disponibles</h4>
         <ul>
