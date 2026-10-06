@@ -109,7 +109,6 @@
       </label>
       <div id="maskEditorBody" class="editor-body disabled">
 
-        <!-- Herramientas de dibujo -->
         <div class="tool-grid" id="toolGroup">
           <button class="tool-btn active" data-tool="brush" title="Pincel">
             <img src="icons/maskedit.png" alt="" class="tool-icon" />
@@ -129,13 +128,11 @@
           </button>
         </div>
 
-        <!-- Pincel: tamaño -->
         <label class="field" id="brushSizeField">
           <span>Tamaño pincel: <b id="brushSizeVal">15</b> px</span>
           <input type="range" id="brushSize" min="1" max="100" value="15" />
         </label>
 
-        <!-- Modo add/remove común -->
         <div class="btn-group" id="brushModeGroup">
           <button class="mode-btn active" data-mode="add">
             <img src="icons/add.png" alt="" class="btn-icon" />
@@ -147,7 +144,6 @@
           </button>
         </div>
 
-        <!-- Opciones varita mágica -->
         <div id="smartOpts" class="smart-opts hidden">
           <label class="field">
             <span>Color: <b id="smartColorVal">30</b></span>
@@ -159,7 +155,6 @@
           </label>
         </div>
 
-        <!-- Rect/Lasso: opciones -->
         <div id="shapeOpts" class="smart-opts hidden">
           <p class="hint" id="shapeHint">Arrastra para dibujar el rectángulo.</p>
         </div>
@@ -277,7 +272,7 @@
       </div>
     </div>
 
-    <!-- BACKGROUND BLUR (bokeh) -->
+    <!-- BACKGROUND BLUR -->
     <div class="panel-section collapsible" data-section="blur">
       <h2 class="section-title">
         <span class="icon-title">
@@ -460,13 +455,25 @@
 <!-- ================= MODAL: AYUDA ================= -->
 <div class="modal-backdrop" id="helpModal" hidden>
   <div class="modal modal-help">
-    <h3>❓ Ayuda — Removedor de Fondos con IA JPB</h3>
+    <h3>Ayuda — Removedor de Fondos con IA JPB</h3>
 
     <div class="help-tabs">
-      <button class="help-tab active" data-tab="android">📱 Android</button>
-      <button class="help-tab" data-tab="windows">💻 Windows</button>
-      <button class="help-tab" data-tab="shortcuts">⌨️ Atajos</button>
-      <button class="help-tab" data-tab="general">ℹ️ General</button>
+      <button class="help-tab active" data-tab="android">
+        <img src="icons/android.png" alt="" class="tab-icon" />
+        <span>Android</span>
+      </button>
+      <button class="help-tab" data-tab="windows">
+        <img src="icons/windows.png" alt="" class="tab-icon" />
+        <span>Windows</span>
+      </button>
+      <button class="help-tab" data-tab="shortcuts">
+        <img src="icons/keyboard.png" alt="" class="tab-icon" />
+        <span>Atajos</span>
+      </button>
+      <button class="help-tab" data-tab="general">
+        <img src="icons/info.png" alt="" class="tab-icon" />
+        <span>General</span>
+      </button>
     </div>
 
     <div class="help-content">
@@ -485,9 +492,12 @@
         <h4>Gestos táctiles</h4>
         <ul>
           <li><b>1 dedo:</b> pan (mover la imagen).</li>
-          <li><b>2 dedos:</b> pinch-zoom + pan.</li>
-          <li><b>Con editor de máscara:</b> 1 dedo dibuja; 2 dedos siguen haciendo zoom/pan.</li>
+          <li><b>2 dedos:</b> pinch-zoom + pan simultáneo.</li>
+          <li><b>Con editor de máscara:</b> 1 dedo dibuja con la herramienta activa; 2 dedos siguen haciendo zoom/pan (el trazo del 1er dedo se cancela automáticamente al detectar el 2º).</li>
         </ul>
+
+        <h4>Wake Lock</h4>
+        <p>Mientras la IA procesa, la pantalla no se apagará automáticamente.</p>
       </div>
 
       <div class="help-panel" data-panel="windows">
@@ -514,13 +524,15 @@
           <li><b>Ctrl + O</b>: Abrir imagen</li>
           <li><b>Ctrl + S</b>: Guardar</li>
           <li><b>Ctrl + C</b>: Copiar al portapapeles</li>
-          <li><b>Ctrl + Z</b>: Deshacer (edición de máscara)</li>
-          <li><b>Ctrl + Y</b>: Rehacer (edición de máscara)</li>
-          <li><b>+</b> / <b>-</b>: Zoom in / out</li>
-          <li><b>0</b>: Ajustar a ventana</li>
-          <li><b>1</b>: Zoom 100%</li>
-          <li><b>[</b> / <b>]</b>: Reducir / aumentar pincel</li>
-          <li><b>Ctrl + V</b>: Pegar imagen</li>
+          <li><b>Ctrl + V</b>: Pegar imagen desde el portapapeles</li>
+          <li><b>Ctrl + Z</b>: Deshacer (solo en edición de máscara)</li>
+          <li><b>Ctrl + Y</b>: Rehacer (solo en edición de máscara)</li>
+          <li><b>+</b> o <b>=</b>: Zoom in</li>
+          <li><b>-</b> o <b>_</b>: Zoom out</li>
+          <li><b>0</b>: Ajustar a ventana (Zoom Fit)</li>
+          <li><b>1</b>: Zoom al 100%</li>
+          <li><b>[</b>: Reducir tamaño del pincel (-5 px)</li>
+          <li><b>]</b>: Aumentar tamaño del pincel (+5 px)</li>
           <li><b>Barra espaciadora</b> + arrastrar: pan</li>
         </ul>
         <h4>Ratón</h4>
@@ -528,13 +540,13 @@
           <li><b>Rueda:</b> zoom hacia el cursor</li>
           <li><b>Shift + rueda:</b> scroll horizontal</li>
           <li><b>Alt + rueda:</b> scroll vertical</li>
-          <li><b>Botón medio / derecho:</b> pan</li>
+          <li><b>Botón medio / derecho (arrastrar):</b> pan</li>
         </ul>
       </div>
 
       <div class="help-panel" data-panel="general">
         <h4>¿Cómo funciona?</h4>
-        <p>Todo se ejecuta <b>localmente</b> en tu dispositivo (WebAssembly o WebGPU). Ninguna imagen se sube a ningún servidor.</p>
+        <p>Todo se ejecuta <b>localmente</b> en tu dispositivo usando <b>WebGPU</b> (si está disponible) o <b>WebAssembly</b>. Ninguna imagen se sube a ningún servidor.</p>
 
         <h4>Modelos disponibles</h4>
         <ul>
@@ -545,11 +557,32 @@
           <li><b>ISNet General (179 MB):</b> bordes finos.</li>
         </ul>
 
-        <h4>Desenfoque de fondo (bokeh)</h4>
-        <p>Si activas el relleno o el desenfoque de fondo, la app procesa el fondo por separado. Puedes combinar relleno + desenfoque para conseguir efectos de retrato profesionales.</p>
+        <h4>Herramientas del editor de máscara</h4>
+        <ul>
+          <li><b>Pincel:</b> pinta libremente con tamaño ajustable.</li>
+          <li><b>Rectángulo:</b> arrastra para seleccionar un área rectangular.</li>
+          <li><b>Lazo:</b> dibuja una forma cerrada a mano alzada.</li>
+          <li><b>Varita mágica:</b> clic en una zona de color uniforme para seleccionarla.</li>
+        </ul>
 
-        <h4>Wake Lock</h4>
-        <p>Mientras la IA procesa, la pantalla no se apagará automáticamente (si el dispositivo lo permite).</p>
+        <h4>Modos</h4>
+        <ul>
+          <li><b>Añadir:</b> mantiene la zona en la imagen final.</li>
+          <li><b>Quitar:</b> elimina la zona (transparente).</li>
+        </ul>
+
+        <h4>Desenfoque de fondo (bokeh)</h4>
+        <p>Aplica desenfoque gaussiano al fondo. Puedes combinarlo con relleno de color para conseguir efectos de retrato.</p>
+
+        <h4>Historial</h4>
+        <p>El editor de máscara guarda hasta 30 pasos. Usa <b>Ctrl+Z</b> / <b>Ctrl+Y</b> o los botones flotantes.</p>
+
+        <h4>Consejos</h4>
+        <ul>
+          <li>Empieza con <b>U²-Netp</b> para probar rápido.</li>
+          <li>Usa <b>U²-Net Human</b> para retratos.</li>
+          <li>Para bordes complejos (pelo, encaje) usa <b>ISNet</b>.</li>
+        </ul>
       </div>
     </div>
 

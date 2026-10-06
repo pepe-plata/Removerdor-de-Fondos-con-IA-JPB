@@ -1,5 +1,5 @@
 // ===================================================================
-//  Removedor de Fondos con IA JPB — PWA (v11)
+//  Removedor de Fondos con IA JPB — PWA (v12)
 //  HTML + CSS + JS puro. Sin frameworks.
 // ===================================================================
 
@@ -46,7 +46,7 @@
     panY: 0,
     brushSize: 15,
     brushMode: 'add',
-    activeTool: 'brush',       // 'brush' | 'rect' | 'lasso' | 'wand'
+    activeTool: 'brush',
     smartSelect: false,
     targetColor: { r: 255, g: 255, b: 255 },
     colorPickMode: false,
@@ -58,35 +58,31 @@
     maskBackup: null,
     copyExif: false,
 
-    // Rect / Lasso shape drawing state
-    shapeStart: null,          // {x, y} en coordenadas imagen
+    // Rect / Lasso
+    shapeStart: null,
     shapeCurrent: null,
-    lassoPoints: [],           // puntos del lazo (coords imagen)
+    lassoPoints: [],
     isDrawingShape: false,
 
     // Touch
     activePointers: new Map(),
     pinchStart: null,
 
-    // Undo/Redo (solo máscara)
+    // ===== FIX: Delay para el primer toque =====
+    pendingStroke: null,        // { pointerId, timeoutId, startEventData }
+    pendingStrokeDelay: 90,     // ms de margen para detectar 2º dedo
+
+    // Undo/Redo
     history: [],
     historyIndex: -1,
     historyMax: 30,
     isPerformingUndoRedo: false,
 
     // Fill
-    fill: {
-      enabled: false,
-      color: '#ffffff',
-      opacity: 100
-    },
+    fill: { enabled: false, color: '#ffffff', opacity: 100 },
 
-    // Background blur (bokeh)
-    blur: {
-      enabled: false,
-      amount: 15,
-      darken: 0
-    },
+    // Blur (bokeh)
+    blur: { enabled: false, amount: 15, darken: 0 },
 
     bgConfig: {
       light: { mode: 'checker', color: '#eef0f5' },
@@ -145,6 +141,7 @@
     maskEditorToggle: $('maskEditorToggle'),
     maskEditorBody: $('maskEditorBody'),
     toolGroup: $('toolGroup'),
+    brushSizeField: $('brushSizeField'),
     brushSize: $('brushSize'),
     brushSizeVal: $('brushSizeVal'),
     brushModeGroup: $('brushModeGroup'),
@@ -248,11 +245,41 @@
   };
 
   /**
-   * Limpia el nombre de archivo:
-   * - Quita la extensión
-   * - Quita IDs tipo [xxx] o (xxx) o sufijos hex/UUID al final
-   * - Quita prefijos tipo "IMG_", "DSC_", "PXL_" solo si van seguidos de números largos
-   * - Si queda vacío, devuelve "imagen"
+   * Detecta si un string parece un ID en lugar de un nombre de archivo real.
+   * Ejemplos de ID: "1000024135", "a3f8b2c1", "IMG_20240115_193045",
+   *                 "image_picker_ABC123", "00000123-0000-...", "PXL_20240115_..."
+   */
+  function looksLikeId(name) {
+    if (!name) return true;
+    const base = name.replace(/\.[^.\/\\]+$/, '');
+
+    // Solo números (10+ dígitos)
+    if (/^\d{10,}$/.test(base)) return true;
+
+    // Solo hex/UUID largos
+    if (/^[0-9a-f]{8,}$/i.test(base) && /[a-f]/i.test(base)) return true;
+
+    // UUID con guiones
+    if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(base)) return true;
+
+    // Patrones de cámara Android: IMG_YYYYMMDD_HHMMSS, PXL_YYYYMMDD_HHMMSS_...
+    if (/^(IMG|PXL|VID|MVIMG|Screenshot)_?\d{8,}/i.test(base) && base.length > 20) {
+      // Podría ser válido, pero a veces el picker añade sufijos largos. Aceptamos si no hay mucho hex.
+      if (!/[0-9a-f]{6,}$/i.test(base)) return false;
+    }
+
+    // image_picker_<timestamp> o similares
+    if (/^(image_picker|file_picker|content-uri|media)[\s_-]?/i.test(base)) return true;
+
+    // Nombres con demasiados números y sin vocales (raro en nombres reales)
+    const digits = (base.match(/\d/g) || []).length;
+    if (digits / base.length > 0.6 && base.length > 12) return true;
+
+    return false;
+  }
+
+  /**
+   * Limpia el nombre de archivo.
    */
   function cleanFileName(name) {
     if (!name) return 'imagen';
@@ -273,9 +300,55 @@
     // Colapsar espacios
     n = n.replace(/\s+/g, ' ').trim();
 
-    // Fallback
     if (!n) n = 'imagen';
     return n;
+  }
+
+  /**
+   * Intenta obtener un nombre "amigable" del archivo.
+   * En Android el picker a veces devuelve un nombre genérico (image_picker_xxx)
+   * o solo un ID numérico. Probamos varias fuentes por orden de fiabilidad.
+   */
+  function resolveFileName(file) {
+    // 1. file.name normal
+    let candidate = (file.name || '').trim();
+
+    // 2. Si parece ID, intentar con webkitRelativePath
+    if (looksLikeId(candidate)) {
+      const rel = (file.webkitRelativePath || '').trim();
+      if (rel) {
+        const parts = rel.split('/');
+        const last = parts[parts.length - 1];
+        if (last && !looksLikeId(last)) candidate = last;
+      }
+    }
+
+    // 3. Si sigue pareciendo ID, y el file viene con "uri" (algunos pickers lo añaden),
+    //    intentar sacar el nombre del final del path.
+    if (looksLikeId(candidate) && file.uri) {
+      try {
+        const u = String(file.uri);
+        const decoded = decodeURIComponent(u);
+        const lastSlash = decoded.lastIndexOf('/');
+        if (lastSlash >= 0 && lastSlash < decoded.length - 1) {
+          const tail = decoded.slice(lastSlash + 1).split('?')[0].split('#')[0];
+          if (tail && !looksLikeId(tail)) candidate = tail;
+        }
+      } catch (_) {}
+    }
+
+    // 4. Fallback: usar la fecha de modificación como nombre
+    if (looksLikeId(candidate)) {
+      try {
+        const d = new Date(file.lastModified || Date.now());
+        const stamp = `${d.getFullYear()}${String(d.getMonth()+1).padStart(2,'0')}${String(d.getDate()).padStart(2,'0')}_${String(d.getHours()).padStart(2,'0')}${String(d.getMinutes()).padStart(2,'0')}${String(d.getSeconds()).padStart(2,'0')}`;
+        candidate = `foto_${stamp}`;
+      } catch (_) {
+        candidate = 'imagen';
+      }
+    }
+
+    return candidate || 'imagen';
   }
 
   // ===================================================================
@@ -317,17 +390,13 @@
       if (wakeLock) return;
       wakeLock = await navigator.wakeLock.request('screen');
       wakeLock.addEventListener('release', () => { wakeLock = null; });
-    } catch (e) { /* silencioso */ }
-  }
-  async function releaseWakeLock() {
-    try {
-      if (wakeLock) { await wakeLock.release(); wakeLock = null; }
     } catch (_) {}
   }
+  async function releaseWakeLock() {
+    try { if (wakeLock) { await wakeLock.release(); wakeLock = null; } } catch (_) {}
+  }
   document.addEventListener('visibilitychange', () => {
-    if (document.visibilityState === 'visible' && state.hasProcessed && els.btnProcess.disabled) {
-      acquireWakeLock();
-    }
+    if (document.visibilityState === 'visible' && els.btnProcess.disabled) acquireWakeLock();
   });
 
   // ===================================================================
@@ -340,7 +409,6 @@
     const collapsed = els.appMain.classList.toggle('sidebar-collapsed');
     localStorage.setItem('sidebarCollapsed', collapsed ? '1' : '0');
   }
-
   els.btnMenu.addEventListener('click', () => {
     if (isMobile()) {
       if (els.sidebar.classList.contains('open')) closeSidebar();
@@ -355,20 +423,17 @@
       localStorage.setItem('sidebarCollapsed', '0');
     }
   });
-
   (function initSidebarState() {
     if (!isMobile() && localStorage.getItem('sidebarCollapsed') === '1') {
       els.appMain.classList.add('sidebar-collapsed');
     }
   })();
-
   ['btnProcess', 'btnOpen', 'btnReset', 'btnManageModels',
    'btnApplyMask', 'btnApplyColor', 'btnApplyFill', 'btnClearFill',
    'btnApplyBlur', 'btnClearBlur'].forEach(id => {
     const el = document.getElementById(id);
     if (el) el.addEventListener('click', () => { if (isMobile()) setTimeout(closeSidebar, 150); });
   });
-
   window.addEventListener('resize', () => { if (!isMobile()) closeSidebar(); });
 
   // ===================================================================
@@ -387,7 +452,7 @@
   });
 
   // ===================================================================
-  //  FONDO CANVAS (checker/solid)
+  //  FONDO CANVAS
   // ===================================================================
   (function initBgConfig() {
     try {
@@ -399,7 +464,6 @@
       }
     } catch (_) {}
   })();
-
   function currentTheme() { return document.documentElement.getAttribute('data-theme') || 'light'; }
   function applyCanvasBg() {
     const theme = currentTheme();
@@ -424,7 +488,6 @@
     applyCanvasBg();
   }
   function saveBgConfig() { localStorage.setItem('bgConfig', JSON.stringify(state.bgConfig)); }
-
   els.bgModeChecker.addEventListener('change', () => {
     state.bgConfig[currentTheme()].mode = 'checker';
     els.bgSolidField.classList.remove('visible');
@@ -461,19 +524,12 @@
       saveBgConfig(); applyCanvasBg();
     });
   });
-
   els.btnBgApplyLight.addEventListener('click', () => {
-    state.bgConfig.light = {
-      mode: els.bgModeSolid.checked ? 'solid' : 'checker',
-      color: els.bgSolidColor.value
-    };
+    state.bgConfig.light = { mode: els.bgModeSolid.checked ? 'solid' : 'checker', color: els.bgSolidColor.value };
     saveBgConfig(); setStatus('Fondo aplicado al tema Claro');
   });
   els.btnBgApplyDark.addEventListener('click', () => {
-    state.bgConfig.dark = {
-      mode: els.bgModeSolid.checked ? 'solid' : 'checker',
-      color: els.bgSolidColor.value
-    };
+    state.bgConfig.dark = { mode: els.bgModeSolid.checked ? 'solid' : 'checker', color: els.bgSolidColor.value };
     saveBgConfig(); setStatus('Fondo aplicado al tema Oscuro');
   });
 
@@ -482,8 +538,7 @@
   // ===================================================================
   els.fillEnabled.addEventListener('change', (e) => {
     state.fill.enabled = e.target.checked;
-    updateFillUI();
-    applyMaskToCurrent();
+    updateFillUI(); applyMaskToCurrent();
   });
   els.fillColor.addEventListener('input', (e) => {
     els.fillColorHex.value = e.target.value;
@@ -494,8 +549,7 @@
     const v = e.target.value;
     if (/^#?[a-f\d]{6}$/i.test(v)) {
       const hex = v.startsWith('#') ? v : '#' + v;
-      els.fillColor.value = hex;
-      state.fill.color = hex;
+      els.fillColor.value = hex; state.fill.color = hex;
       if (state.fill.enabled) applyMaskToCurrent();
     }
   });
@@ -507,13 +561,10 @@
   document.querySelectorAll('.swatch-fill').forEach(btn => {
     btn.addEventListener('click', () => {
       const color = btn.dataset.color;
-      els.fillColor.value = color;
-      els.fillColorHex.value = color;
+      els.fillColor.value = color; els.fillColorHex.value = color;
       state.fill.color = color;
       if (!state.fill.enabled) {
-        state.fill.enabled = true;
-        els.fillEnabled.checked = true;
-        updateFillUI();
+        state.fill.enabled = true; els.fillEnabled.checked = true; updateFillUI();
       }
       applyMaskToCurrent();
     });
@@ -526,17 +577,13 @@
     setStatus('Clic en la imagen para tomar color de relleno');
   });
   els.btnApplyFill.addEventListener('click', () => {
-    state.fill.enabled = true;
-    els.fillEnabled.checked = true;
-    updateFillUI();
-    applyMaskToCurrent();
+    state.fill.enabled = true; els.fillEnabled.checked = true;
+    updateFillUI(); applyMaskToCurrent();
     setStatus('Fondo rellenado');
   });
   els.btnClearFill.addEventListener('click', () => {
-    state.fill.enabled = false;
-    els.fillEnabled.checked = false;
-    updateFillUI();
-    applyMaskToCurrent();
+    state.fill.enabled = false; els.fillEnabled.checked = false;
+    updateFillUI(); applyMaskToCurrent();
     setStatus('Relleno quitado');
   });
   function updateFillUI() {
@@ -546,12 +593,11 @@
   }
 
   // ===================================================================
-  //  BACKGROUND BLUR (bokeh)
+  //  BACKGROUND BLUR
   // ===================================================================
   els.blurEnabled.addEventListener('change', (e) => {
     state.blur.enabled = e.target.checked;
-    updateBlurUI();
-    applyMaskToCurrent();
+    updateBlurUI(); applyMaskToCurrent();
   });
   els.blurAmount.addEventListener('input', (e) => {
     state.blur.amount = parseInt(e.target.value);
@@ -564,17 +610,13 @@
     if (state.blur.enabled) applyMaskToCurrent();
   });
   els.btnApplyBlur.addEventListener('click', () => {
-    state.blur.enabled = true;
-    els.blurEnabled.checked = true;
-    updateBlurUI();
-    applyMaskToCurrent();
+    state.blur.enabled = true; els.blurEnabled.checked = true;
+    updateBlurUI(); applyMaskToCurrent();
     setStatus('Desenfoque aplicado');
   });
   els.btnClearBlur.addEventListener('click', () => {
-    state.blur.enabled = false;
-    els.blurEnabled.checked = false;
-    updateBlurUI();
-    applyMaskToCurrent();
+    state.blur.enabled = false; els.blurEnabled.checked = false;
+    updateBlurUI(); applyMaskToCurrent();
     setStatus('Desenfoque quitado');
   });
   function updateBlurUI() {
@@ -623,14 +665,24 @@
   });
 
   async function loadImageFile(file) {
-    if (!file.type.startsWith('image/')) {
-      alert('Por favor selecciona una imagen válida');
-      return;
+    if (!file || !file.type || !file.type.startsWith('image/')) {
+      // Algunos pickers de Android no rellenan type; intentamos por extensión
+      const nameLower = (file && file.name || '').toLowerCase();
+      const okExt = /\.(png|jpe?g|webp|bmp|gif)$/i.test(nameLower);
+      if (!file || !okExt) {
+        alert('Por favor selecciona una imagen válida');
+        return;
+      }
     }
-    els.fileName.textContent = file.name;
-    state.originalFileName = cleanFileName(file.name);
 
-    const isJpeg = file.type === 'image/jpeg' || /\.jpe?g$/i.test(file.name);
+    // Resolver nombre amigable
+    const resolvedName = resolveFileName(file);
+    els.fileName.textContent = resolvedName;
+    state.originalFileName = cleanFileName(resolvedName);
+
+    const isJpeg = (file.type === 'image/jpeg') ||
+                   /\.jpe?g$/i.test(file.name || '') ||
+                   /\.jpe?g$/i.test(resolvedName);
     if (isJpeg) {
       const bufReader = new FileReader();
       bufReader.onload = (ev) => { originalFileBuffer = ev.target.result; };
@@ -657,12 +709,9 @@
       state.displayOriginal = false;
       state.maskBackup = null;
       state.lastBrushPoint = null;
-      state.fill.enabled = false;
-      els.fillEnabled.checked = false;
-      state.blur.enabled = false;
-      els.blurEnabled.checked = false;
+      state.fill.enabled = false; els.fillEnabled.checked = false;
+      state.blur.enabled = false; els.blurEnabled.checked = false;
 
-      // Reiniciar historial
       state.history = [];
       state.historyIndex = -1;
       pushMaskHistory();
@@ -748,7 +797,6 @@
     ctx.clearRect(0, 0, els.mainCanvas.width, els.mainCanvas.height);
     if (src) ctx.drawImage(src, 0, 0);
 
-    // Overlay: máscara rosada + preview de shape si está dibujando
     overlayCtx.clearRect(0, 0, els.overlayCanvas.width, els.overlayCanvas.height);
 
     if (state.maskEditorActive && state.maskCanvas) {
@@ -763,7 +811,6 @@
       overlayCtx.drawImage(tmp, 0, 0);
     }
 
-    // Preview rect / lasso
     if (state.maskEditorActive && state.isDrawingShape) {
       overlayCtx.save();
       overlayCtx.strokeStyle = 'rgba(79, 70, 229, 0.95)';
@@ -797,30 +844,24 @@
     const w = state.originalCanvas.width;
     const h = state.originalCanvas.height;
 
-    // 1) Preparar máscara como alpha real
     const cut = createCanvas(w, h);
     const cctx = cut.getContext('2d');
     cctx.drawImage(state.originalCanvas, 0, 0);
     cctx.globalCompositeOperation = 'destination-in';
     cctx.drawImage(state.maskCanvas, 0, 0);
 
-    // 2) Preparar el fondo
     const cc = state.currentCanvas.getContext('2d');
     cc.clearRect(0, 0, w, h);
 
     const backgroundOn = state.fill.enabled || state.blur.enabled;
-
     if (backgroundOn) {
-      // Crear canvas de fondo
       const bg = createCanvas(w, h);
       const bctx = bg.getContext('2d');
 
       if (state.blur.enabled && state.blur.amount > 0) {
-        // Desenfoque real: usar filter: blur() al dibujar
         bctx.filter = `blur(${state.blur.amount}px)`;
         bctx.drawImage(state.originalCanvas, 0, 0);
         bctx.filter = 'none';
-        // Oscurecer
         if (state.blur.darken > 0) {
           bctx.fillStyle = `rgba(0,0,0,${state.blur.darken / 100})`;
           bctx.fillRect(0, 0, w, h);
@@ -831,11 +872,8 @@
         bctx.fillStyle = `rgba(${rgb.r}, ${rgb.g}, ${rgb.b}, ${alpha})`;
         bctx.fillRect(0, 0, w, h);
       }
-
       cc.drawImage(bg, 0, 0);
     }
-
-    // 3) Sujeto encima
     cc.drawImage(cut, 0, 0);
 
     state.hasProcessed = true;
@@ -863,7 +901,7 @@
   }
 
   // ===================================================================
-  //  HISTORIAL (undo/redo de máscara)
+  //  HISTORIAL
   // ===================================================================
   function snapshotMask() {
     const w = state.maskCanvas.width;
@@ -872,12 +910,9 @@
     c.getContext('2d').drawImage(state.maskCanvas, 0, 0);
     return c;
   }
-
   function pushMaskHistory() {
     if (state.isPerformingUndoRedo) return;
     if (!state.maskCanvas) return;
-
-    // Truncar redo
     state.history = state.history.slice(0, state.historyIndex + 1);
     state.history.push(snapshotMask());
     if (state.history.length > state.historyMax) {
@@ -887,7 +922,6 @@
     }
     updateUndoRedoUI();
   }
-
   function undo() {
     if (!state.maskEditorActive) return;
     if (state.historyIndex <= 0) { setStatus('Nada que deshacer'); return; }
@@ -922,12 +956,11 @@
     els.btnUndo.disabled = !canUndo;
     els.btnRedo.disabled = !canRedo;
   }
-
   els.btnUndo.addEventListener('click', undo);
   els.btnRedo.addEventListener('click', redo);
 
   // ===================================================================
-  //  WHEEL + PAN + POINTER
+  //  WHEEL
   // ===================================================================
   els.canvasArea.addEventListener('wheel', (e) => {
     if (!state.originalImage) return;
@@ -941,15 +974,71 @@
     zoomAtPoint(state.zoom * factor, mx, my);
   }, { passive: false });
 
+  // ===================================================================
+  //  FIX #1: MANEJO DE POINTERS CON DELAY PARA 1er DEDO
+  // ===================================================================
+  // Problema: al pinchar con 2 dedos para hacer zoom en Android, el 1er dedo
+  // dispara pointerdown y empieza a pintar antes de que el 2º dedo toque.
+  // Solución:
+  //  - Al recibir 1er pointerdown en modo touch con herramienta activa,
+  //    NO pintamos inmediatamente. Guardamos pendingStroke con un timeout.
+  //  - Si en pendingStrokeDelay ms entra un 2º dedo → cancelamos el pending.
+  //  - Si el timeout expira y sigue siendo 1 dedo → ejecutamos el stroke.
+  //  - Si mientras tanto el usuario mueve el dedo más de N px, se cancela
+  //    el delay y arrancamos el trazo (para dar sensación responsiva).
+
+  function cancelPendingStroke() {
+    if (state.pendingStroke) {
+      clearTimeout(state.pendingStroke.timeoutId);
+      state.pendingStroke = null;
+    }
+  }
+
+  function executePendingStroke(pending, e) {
+    cancelPendingStroke();
+    if (!pending) return;
+
+    const tool = pending.tool;
+    const ev = pending.lastEvent || e;
+
+    if (tool === 'wand') {
+      doMagicWand(ev);
+    } else if (tool === 'rect') {
+      state.isDrawingShape = true;
+      state.shapeStart = eventToImageCoords(ev);
+      state.shapeCurrent = { ...state.shapeStart };
+      render();
+    } else if (tool === 'lasso') {
+      state.isDrawingShape = true;
+      state.lassoPoints = [eventToImageCoords(ev)];
+      render();
+    } else {
+      // brush
+      startBrushStroke(ev);
+    }
+  }
+
   els.canvasArea.addEventListener('pointerdown', (e) => {
     if (!state.originalImage) return;
     state.activePointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
 
+    // === 2 dedos: pinch, cancelar cualquier pending o trazo ===
     if (state.activePointers.size === 2) {
+      // Cancelar pending stroke (dedo 1 no debe pintar)
+      cancelPendingStroke();
       state.isDrawing = false;
       state.lastBrushPoint = null;
-      state.isPanning = false;
       state.isDrawingShape = false;
+      state.shapeStart = null;
+      state.shapeCurrent = null;
+      state.lassoPoints = [];
+      state.isPanning = false;
+
+      // Si había un trazo iniciado con delay que aún no se había ejecutado,
+      // simplemente se descarta. No hay nada que revertir porque no pintó.
+      // Si ya se había ejecutado un stroke con delay (ya pintó unos píxeles),
+      // también lo dejamos, no merece la pena revertir 1-2 píxeles.
+
       startPinch();
       try { els.canvasArea.setPointerCapture(e.pointerId); } catch (_) {}
       e.preventDefault();
@@ -979,6 +1068,30 @@
     if (!isTouch && e.button !== 0) return;
     if (pickingColor) { pickColorFromImage(e); return; }
 
+    // === FIX: en TOUCH con herramienta activa, diferimos la acción ===
+    if (editingMask && isTouch) {
+      // Guardar datos y esperar a ver si entra un 2º dedo
+      const pending = {
+        pointerId: e.pointerId,
+        tool: state.activeTool,
+        startClientX: e.clientX,
+        startClientY: e.clientY,
+        lastEvent: e,
+        timeoutId: null
+      };
+      pending.timeoutId = setTimeout(() => {
+        // Si seguimos con 1 solo dedo, ejecutar
+        if (state.activePointers.size === 1 && state.pendingStroke === pending) {
+          executePendingStroke(pending, pending.lastEvent);
+        }
+      }, state.pendingStrokeDelay);
+
+      state.pendingStroke = pending;
+      e.preventDefault();
+      return;
+    }
+
+    // === Ratón o touch con pan: comportamiento inmediato ===
     if (editingMask) {
       if (state.activeTool === 'wand') doMagicWand(e);
       else if (state.activeTool === 'rect') startRect(e);
@@ -992,7 +1105,25 @@
     if (state.activePointers.has(e.pointerId)) {
       state.activePointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
     }
+
+    // Pinch activo
     if (state.activePointers.size >= 2 && state.pinchStart) { updatePinch(); return; }
+
+    // Si hay pendingStroke (delay), evaluar si el dedo se movió lo suficiente
+    // como para arrancar el trazo sin esperar al timeout
+    if (state.pendingStroke && state.pendingStroke.pointerId === e.pointerId) {
+      state.pendingStroke.lastEvent = e;
+      const dx = e.clientX - state.pendingStroke.startClientX;
+      const dy = e.clientY - state.pendingStroke.startClientY;
+      const dist = Math.hypot(dx, dy);
+      if (dist > 8) {
+        // El usuario ya está moviendo → arrancar el trazo ya
+        const p = state.pendingStroke;
+        cancelPendingStroke();
+        executePendingStroke(p, e);
+      }
+      return;
+    }
 
     updateCursor(e);
 
@@ -1010,7 +1141,18 @@
 
   function endPointer(e) {
     state.activePointers.delete(e.pointerId);
+
+    // Cancelar pending si aún está activo y suelto el dedo antes del timeout
+    if (state.pendingStroke && state.pendingStroke.pointerId === e.pointerId) {
+      // Si es un tap rápido, ejecutamos la acción (pincel suelto, wand, etc.)
+      const p = state.pendingStroke;
+      cancelPendingStroke();
+      // Ejecutar al soltar si fue un tap rápido sin movimiento
+      executePendingStroke(p, e);
+    }
+
     if (state.pinchStart && state.activePointers.size < 2) state.pinchStart = null;
+
     if (state.isPanning && state.activePointers.size === 0) {
       state.isPanning = false;
       els.canvasArea.classList.remove('panning');
@@ -1057,13 +1199,11 @@
     const dist = Math.hypot(p2.x - p1.x, p2.y - p1.y);
     const midX = (p1.x + p2.x) / 2;
     const midY = (p1.y + p2.y) / 2;
-
     const start = state.pinchStart;
     const scale = dist / start.dist;
     const newZoom = clamp(start.zoom * scale, 0.05, 20);
     const midDx = midX - start.midX;
     const midDy = midY - start.midY;
-
     state.panX = start.areaMidX - (start.areaMidX - start.panX) * (newZoom / start.zoom) + midDx;
     state.panY = start.areaMidY - (start.areaMidY - start.panY) * (newZoom / start.zoom) + midDy;
     state.zoom = newZoom;
@@ -1076,24 +1216,16 @@
   function updateCursor(e) {
     els.canvasArea.classList.remove('brush-mode', 'magic-mode', 'pick-mode', 'crosshair-mode');
     const inPanState = state.spacePressed || state.isPanning;
-
     if (state.colorPickMode && !inPanState) {
-      els.canvasArea.classList.add('pick-mode');
-      els.brushCursor.classList.remove('show');
-      return;
+      els.canvasArea.classList.add('pick-mode'); els.brushCursor.classList.remove('show'); return;
     }
     if (state.maskEditorActive && !inPanState) {
       if (state.activeTool === 'wand') {
-        els.canvasArea.classList.add('magic-mode');
-        els.brushCursor.classList.remove('show');
-        return;
+        els.canvasArea.classList.add('magic-mode'); els.brushCursor.classList.remove('show'); return;
       }
       if (state.activeTool === 'rect' || state.activeTool === 'lasso') {
-        els.canvasArea.classList.add('crosshair-mode');
-        els.brushCursor.classList.remove('show');
-        return;
+        els.canvasArea.classList.add('crosshair-mode'); els.brushCursor.classList.remove('show'); return;
       }
-      // brush
       els.canvasArea.classList.add('brush-mode');
       const rect = els.canvasArea.getBoundingClientRect();
       const x = e.clientX - rect.left;
@@ -1123,12 +1255,10 @@
     state.maskEditorActive = e.target.checked;
     els.maskEditorBody.classList.toggle('disabled', !state.maskEditorActive);
     if (!state.maskEditorActive) {
+      cancelPendingStroke();
       els.brushCursor.classList.remove('show');
       els.canvasArea.classList.remove('brush-mode', 'magic-mode', 'crosshair-mode');
-    } else {
-      // Snapshot al entrar al editor
-      pushMaskHistory();
-    }
+    } else pushMaskHistory();
     render();
     updateUndoRedoUI();
     setStatus(state.maskEditorActive ? 'Editor de máscara activo' : 'Editor desactivado');
@@ -1144,28 +1274,25 @@
     btn.classList.add('active');
     state.activeTool = btn.dataset.tool;
 
-    // Mostrar/ocultar opciones
-    els.brushSizeField = els.brushSizeField || document.getElementById('brushSizeField');
     if (state.activeTool === 'brush') {
-      document.getElementById('brushSizeField').style.display = '';
+      els.brushSizeField.style.display = '';
       els.smartOpts.classList.add('hidden');
       els.shapeOpts.classList.add('hidden');
     } else if (state.activeTool === 'wand') {
-      document.getElementById('brushSizeField').style.display = 'none';
+      els.brushSizeField.style.display = 'none';
       els.smartOpts.classList.remove('hidden');
       els.shapeOpts.classList.add('hidden');
     } else if (state.activeTool === 'rect') {
-      document.getElementById('brushSizeField').style.display = 'none';
+      els.brushSizeField.style.display = 'none';
       els.smartOpts.classList.add('hidden');
       els.shapeOpts.classList.remove('hidden');
       els.shapeHint.textContent = 'Arrastra para dibujar el rectángulo.';
     } else if (state.activeTool === 'lasso') {
-      document.getElementById('brushSizeField').style.display = 'none';
+      els.brushSizeField.style.display = 'none';
       els.smartOpts.classList.add('hidden');
       els.shapeOpts.classList.remove('hidden');
       els.shapeHint.textContent = 'Arrastra para trazar el lazo. Suelta para aplicar.';
     }
-
     setStatus('Herramienta: ' + state.activeTool);
   });
 
@@ -1214,7 +1341,7 @@
   }
 
   // ===================================================================
-  //  RECTÁNGULO
+  //  RECT
   // ===================================================================
   function startRect(e) {
     state.isDrawingShape = true;
@@ -1228,13 +1355,17 @@
       render();
     } else if (state.activeTool === 'lasso') {
       const p = eventToImageCoords(e);
-      // Añadir solo si se ha movido lo suficiente (evitar saturar)
       const last = state.lassoPoints[state.lassoPoints.length - 1];
       if (!last || Math.hypot(p.x - last.x, p.y - last.y) > 2) {
         state.lassoPoints.push(p);
         render();
       }
     }
+  }
+  function startLasso(e) {
+    state.isDrawingShape = true;
+    state.lassoPoints = [eventToImageCoords(e)];
+    render();
   }
   function finishShape(e) {
     if (!state.isDrawingShape) return;
@@ -1248,9 +1379,7 @@
       const y = Math.min(state.shapeStart.y, state.shapeCurrent.y);
       const w = Math.abs(state.shapeCurrent.x - state.shapeStart.x);
       const h = Math.abs(state.shapeCurrent.y - state.shapeStart.y);
-
       if (w < 1 || h < 1) { state.shapeStart = null; state.shapeCurrent = null; return; }
-
       if (isAdd) {
         mctx.globalCompositeOperation = 'source-over';
         mctx.fillStyle = '#ffffff';
@@ -1277,11 +1406,9 @@
       mctx.fill();
       mctx.restore();
     }
-
     state.shapeStart = null;
     state.shapeCurrent = null;
     state.lassoPoints = [];
-
     applyMaskToCurrent();
     if (state.maskEditorActive) render();
     pushMaskHistory();
@@ -1313,15 +1440,12 @@
     const edgeTol = parseInt(els.smartEdge.value) / 100;
     const maxDist = 441.67;
     const tolerance = Math.max((colorTol * 0.7 + edgeTol * 0.3) * maxDist, 5);
-
     const si = (sy * w + sx) * 4;
     const sr = imgData[si], sg = imgData[si + 1], sb = imgData[si + 2];
-
     const isAdd = state.brushMode === 'add';
     const mctx = state.maskCanvas.getContext('2d');
     const mImg = mctx.getImageData(0, 0, w, h);
     const mData = mImg.data;
-
     const visited = new Uint8Array(w * h);
     const stack = [[sx, sy]];
     const match = (px, py) => {
@@ -1341,14 +1465,11 @@
       if (x0 < 0 || x0 >= w || y0 < 0 || y0 >= h) continue;
       if (visited[y0 * w + x0]) continue;
       if (!match(x0, y0)) continue;
-
       let xL = x0;
       while (xL > 0 && !visited[y0 * w + (xL - 1)] && match(xL - 1, y0)) xL--;
       let xR = x0;
       while (xR < w - 1 && !visited[y0 * w + (xR + 1)] && match(xR + 1, y0)) xR++;
-
       for (let x = xL; x <= xR; x++) { visited[y0 * w + x] = 1; fill(x, y0); }
-
       for (const yy of [y0 - 1, y0 + 1]) {
         if (yy < 0 || yy >= h) continue;
         let x = xL;
@@ -1368,7 +1489,6 @@
   // ===================================================================
   els.btnCancelMask.addEventListener('click', () => {
     if (state.historyIndex <= 0) { setStatus('Nada que cancelar'); return; }
-    // Volver al estado inicial del editor (index 0)
     state.historyIndex = 0;
     restoreMaskHistory();
     state.maskBackup = null;
@@ -1388,9 +1508,7 @@
   function updateTargetColorFromHex(hex) {
     const m = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex);
     if (!m) return false;
-    state.targetColor = {
-      r: parseInt(m[1], 16), g: parseInt(m[2], 16), b: parseInt(m[3], 16)
-    };
+    state.targetColor = { r: parseInt(m[1],16), g: parseInt(m[2],16), b: parseInt(m[3],16) };
     els.targetColor.value = '#' + m[1] + m[2] + m[3];
     return true;
   }
@@ -1402,7 +1520,6 @@
   els.tolerance.addEventListener('input', (e) => els.toleranceVal.textContent = e.target.value);
   els.edge.addEventListener('input', (e) => els.edgeVal.textContent = e.target.value);
   els.smooth.addEventListener('input', (e) => els.smoothVal.textContent = e.target.value);
-
   els.btnPickColor.addEventListener('click', () => {
     state.colorPickMode = state.colorPickMode === 'target' ? false : 'target';
     els.btnPickColor.style.background = state.colorPickMode ? 'var(--primary)' : '';
@@ -1421,9 +1538,7 @@
     const d = state.originalCanvas.getContext('2d').getImageData(px, py, 1, 1).data;
     const hex = '#' + [d[0], d[1], d[2]].map(v => v.toString(16).padStart(2, '0')).join('');
     if (state.colorPickMode === 'fill') {
-      els.fillColor.value = hex;
-      els.fillColorHex.value = hex;
-      state.fill.color = hex;
+      els.fillColor.value = hex; els.fillColorHex.value = hex; state.fill.color = hex;
       state.colorPickMode = false;
       els.btnFillPickColor.style.background = '';
       els.btnFillPickColor.style.color = '';
@@ -1431,8 +1546,7 @@
       if (state.fill.enabled) applyMaskToCurrent();
       setStatus('Color de relleno: ' + hex);
     } else {
-      els.targetColor.value = hex;
-      els.targetColorHex.value = hex;
+      els.targetColor.value = hex; els.targetColorHex.value = hex;
       updateTargetColorFromHex(hex);
       state.colorPickMode = false;
       els.btnPickColor.style.background = '';
@@ -1442,7 +1556,6 @@
     }
     els.canvasArea.classList.remove('pick-mode');
   }
-
   els.btnApplyColor.addEventListener('click', () => {
     if (!state.originalCanvas) return;
     setStatus('Eliminando color...');
@@ -1464,7 +1577,6 @@
     const smooth = parseInt(els.smooth.value);
     const { r: tr, g: tg, b: tb } = state.targetColor;
     const tolEuclid = tol * 0.6;
-
     const matchMask = new Uint8Array(w * h);
     for (let i = 0, p = 0; i < data.length; i += 4, p++) {
       const dr = data[i] - tr, dg = data[i+1] - tg, db = data[i+2] - tb;
@@ -1544,8 +1656,7 @@
   });
   els.btnZoomFit.addEventListener('click', () => {
     if (!state.originalImage) return;
-    fitToView();
-    setStatus('Ajustado a ventana');
+    fitToView(); setStatus('Ajustado a ventana');
   });
   els.btnReset.addEventListener('click', () => {
     if (!state.originalCanvas) return;
@@ -1556,19 +1667,12 @@
     state.hasProcessed = false;
     state.displayOriginal = false;
     state.maskBackup = null;
-    state.fill.enabled = false;
-    els.fillEnabled.checked = false;
-    state.blur.enabled = false;
-    els.blurEnabled.checked = false;
+    state.fill.enabled = false; els.fillEnabled.checked = false;
+    state.blur.enabled = false; els.blurEnabled.checked = false;
     els.btnToggleView.style.background = '';
-    // Reiniciar historial
-    state.history = [];
-    state.historyIndex = -1;
+    state.history = []; state.historyIndex = -1;
     pushMaskHistory();
-    render();
-    updateUI();
-    updateFillUI();
-    updateBlurUI();
+    render(); updateUI(); updateFillUI(); updateBlurUI();
     setStatus('Reiniciado');
   });
 
@@ -1580,7 +1684,6 @@
     if (typeof window.showSaveFilePicker === 'function') await saveWithFilePicker();
     else saveWithFallback();
   });
-
   async function saveWithFilePicker() {
     try {
       const handle = await window.showSaveFilePicker({
@@ -1597,7 +1700,6 @@
       if (ext === 'jpg' || ext === 'jpeg') mime = 'image/jpeg';
       else if (ext === 'webp') mime = 'image/webp';
       else if (ext === 'bmp') mime = 'image/bmp';
-
       if (mime === 'image/jpeg') {
         quality = await askJpgQuality();
         if (quality === null) return;
@@ -1710,8 +1812,7 @@
   //  GESTIÓN DE MODELOS
   // ===================================================================
   els.btnManageModels.addEventListener('click', async () => {
-    await renderModelsList();
-    els.modelsModal.hidden = false;
+    await renderModelsList(); els.modelsModal.hidden = false;
   });
   els.modelsClose.addEventListener('click', () => { els.modelsModal.hidden = true; });
   els.modelsModal.addEventListener('click', (e) => {
@@ -1744,8 +1845,7 @@
         const key = btn.dataset.key;
         if (!confirm(`¿Eliminar el modelo "${key}" del almacenamiento?`)) return;
         await ModelDB.deleteModel(key);
-        setStatus('Modelo eliminado');
-        await renderModelsList();
+        setStatus('Modelo eliminado'); await renderModelsList();
       });
     });
   }
@@ -1760,11 +1860,7 @@
     els.progressPercent.textContent = '0%';
   }
   function updateProgress(percent) {
-    if (percent < 0) {
-      els.progressBar.style.width = '100%';
-      els.progressPercent.textContent = '...';
-      return;
-    }
+    if (percent < 0) { els.progressBar.style.width = '100%'; els.progressPercent.textContent = '...'; return; }
     els.progressBar.style.width = percent + '%';
     els.progressPercent.textContent = percent + '%';
   }
@@ -1772,23 +1868,18 @@
   els.progressCancel.addEventListener('click', () => hideProgress());
 
   // ===================================================================
-  //  IA (con Wake Lock durante el procesamiento)
+  //  IA
   // ===================================================================
   els.btnProcess.addEventListener('click', async () => {
     if (!state.originalCanvas) return;
-
     const modelKey = els.modelSelect.value;
     els.btnProcess.disabled = true;
     els.processStatus.textContent = `Preparando ${modelKey}...`;
-
     const t0 = performance.now();
     setStatus('Procesando...');
     await acquireWakeLock();
-
     try {
-      let modelBuffer = null;
-      let fromCache = false;
-
+      let modelBuffer = null, fromCache = false;
       try {
         const cached = await ModelDB.getModel(modelKey);
         if (cached) {
@@ -1807,51 +1898,34 @@
         setStatus('Descargando modelo...');
         let lastError = null;
         for (let i = 0; i < urls.length; i++) {
-          const url = urls[i];
           try {
             els.progressTitle.textContent = `Descargando ${modelKey}... (fuente ${i + 1}/${urls.length})`;
-            const res = await callWorker('download', { url }, (p) => updateProgress(p.percent));
-            modelBuffer = res.arrayBuffer;
-            lastError = null;
-            break;
-          } catch (err) {
-            console.warn('[download] Falló ' + url + ':', err.message);
-            lastError = err;
-          }
+            const res = await callWorker('download', { url: urls[i] }, (p) => updateProgress(p.percent));
+            modelBuffer = res.arrayBuffer; lastError = null; break;
+          } catch (err) { console.warn('[download] Falló:', err.message); lastError = err; }
         }
         hideProgress();
-        if (!modelBuffer) {
-          throw new Error('No se pudo descargar el modelo. ' +
-            (lastError ? lastError.message : '') +
-            '\n\nVerifica tu conexión a internet.');
-        }
-        setStatus('Guardando modelo en el dispositivo...');
+        if (!modelBuffer) throw new Error('No se pudo descargar el modelo. ' + (lastError ? lastError.message : ''));
+        setStatus('Guardando modelo...');
         try {
-          await ModelDB.saveModel(modelKey, modelBuffer, {
-            key: modelKey, label: modelKey, size: modelBuffer.byteLength, date: Date.now()
-          });
-        } catch (saveErr) { console.warn('No se pudo guardar:', saveErr); }
+          await ModelDB.saveModel(modelKey, modelBuffer, { key: modelKey, label: modelKey, size: modelBuffer.byteLength, date: Date.now() });
+        } catch (saveErr) { console.warn(saveErr); }
       }
-
       if (fromCache) setStatus('Modelo cargado desde caché');
       setStatus('Ejecutando IA...');
       els.processStatus.textContent = 'Inferencia...';
-
       const imageBitmap = await createImageBitmap(state.originalCanvas);
       const modelBufferCopy = modelBuffer.slice(0);
-
       const result = await callWorker('run', { modelBuffer: modelBufferCopy, imageBitmap });
-
       applyMaskResult(result.mask, result.width, result.height);
       applyMaskToCurrent();
       if (state.maskEditorActive) render();
       pushMaskHistory();
-
       const dt = ((performance.now() - t0) / 1000).toFixed(2);
       setStatus(`Fondo removido en ${dt} s`);
       els.processStatus.textContent = `Completado (${dt} s)`;
     } catch (err) {
-      console.error('Error en procesamiento:', err);
+      console.error('Error:', err);
       hideProgress();
       setStatus('Error: ' + err.message);
       els.processStatus.textContent = 'Error';
@@ -1866,7 +1940,6 @@
       updateUI();
     }
   });
-
   function applyMaskResult(maskArray, mw, mh) {
     const small = createCanvas(mw, mh);
     const sctx = small.getContext('2d');
@@ -1877,7 +1950,6 @@
       sImg.data[i*4+2] = 255; sImg.data[i*4+3] = v;
     }
     sctx.putImageData(sImg, 0, 0);
-
     const w = state.maskCanvas.width, h = state.maskCanvas.height;
     const mctx = state.maskCanvas.getContext('2d');
     mctx.globalCompositeOperation = 'source-over';
@@ -1885,7 +1957,6 @@
     mctx.imageSmoothingEnabled = true;
     mctx.drawImage(small, 0, 0, w, h);
   }
-
   function heuristicSegmentation() {
     const w = state.originalCanvas.width, h = state.originalCanvas.height;
     const data = state.originalCanvas.getContext('2d').getImageData(0, 0, w, h).data;
@@ -1915,51 +1986,33 @@
   }
 
   // ===================================================================
-  //  ATAJOS DE TECLADO GLOBALES
+  //  ATAJOS DE TECLADO
   // ===================================================================
   document.addEventListener('keydown', (e) => {
     const isInput = ['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement.tagName);
     if (isInput && !e.ctrlKey && !e.metaKey) return;
 
-    // Espacio → pan
     if (e.code === 'Space' && !isInput) {
       state.spacePressed = true;
       els.canvasArea.style.cursor = 'grab';
       e.preventDefault();
       return;
     }
-
-    // Ctrl/Cmd combos
     const mod = e.ctrlKey || e.metaKey;
     if (mod) {
       switch (e.key.toLowerCase()) {
-        case 'o':
-          e.preventDefault();
-          els.fileInput.click();
-          return;
-        case 's':
-          e.preventDefault();
-          if (!els.btnSave.disabled) els.btnSave.click();
-          return;
+        case 'o': e.preventDefault(); els.fileInput.click(); return;
+        case 's': e.preventDefault(); if (!els.btnSave.disabled) els.btnSave.click(); return;
         case 'c':
           if (!els.btnCopy.disabled && !window.getSelection().toString()) {
-            e.preventDefault();
-            els.btnCopy.click();
+            e.preventDefault(); els.btnCopy.click();
           }
           return;
-        case 'z':
-          e.preventDefault();
-          undo();
-          return;
-        case 'y':
-          e.preventDefault();
-          redo();
-          return;
+        case 'z': e.preventDefault(); undo(); return;
+        case 'y': e.preventDefault(); redo(); return;
       }
       return;
     }
-
-    // Sin modificadores
     switch (e.key) {
       case '+': case '=':
         e.preventDefault();
@@ -1975,14 +2028,8 @@
           zoomAtPoint(state.zoom / 1.2, area.width / 2, area.height / 2);
         }
         return;
-      case '0':
-        e.preventDefault();
-        if (state.originalImage) fitToView();
-        return;
-      case '1':
-        e.preventDefault();
-        if (state.originalImage) zoomTo(100);
-        return;
+      case '0': e.preventDefault(); if (state.originalImage) fitToView(); return;
+      case '1': e.preventDefault(); if (state.originalImage) zoomTo(100); return;
       case '[':
         e.preventDefault();
         state.brushSize = clamp(state.brushSize - 5, 1, 100);
@@ -1998,10 +2045,7 @@
     }
   });
   document.addEventListener('keyup', (e) => {
-    if (e.code === 'Space') {
-      state.spacePressed = false;
-      els.canvasArea.style.cursor = '';
-    }
+    if (e.code === 'Space') { state.spacePressed = false; els.canvasArea.style.cursor = ''; }
   });
 
   // ===================================================================
@@ -2030,18 +2074,15 @@
   });
 
   // ===================================================================
-  //  SHARE TARGET API (recibir archivos compartidos)
+  //  SHARE TARGET
   // ===================================================================
   (async function initShareTarget() {
     try {
-      if (!navigator.serviceWorker || !navigator.serviceWorker.controller) {
-        // Esperar a que el SW tome el control
+      if (navigator.serviceWorker && !navigator.serviceWorker.controller) {
         await new Promise(r => setTimeout(r, 800));
       }
       const params = new URLSearchParams(location.search);
-      // Soportamos dos formas: ?shared=1 con caché del SW, o ?url=... con un archivo público
       if (params.get('shared') === '1') {
-        // Pedir al SW los archivos compartidos
         const reg = await navigator.serviceWorker.ready;
         const files = await new Promise((resolve) => {
           const channel = new MessageChannel();
@@ -2050,22 +2091,18 @@
         });
         if (files && files.length) {
           const file = files[0];
-          // Convertir a File si viene como objeto {name, type, buffer}
           const blob = new Blob([file.buffer], { type: file.type || 'image/png' });
           const f = new File([blob], file.name || 'imagen-compartida.png', { type: blob.type });
           loadImageFile(f);
-          // Limpiar la URL
           history.replaceState({}, '', location.pathname);
           setStatus('Imagen recibida desde otra app');
         }
       }
-    } catch (e) {
-      console.warn('Share Target init falló:', e);
-    }
+    } catch (e) { console.warn('Share Target init falló:', e); }
   })();
 
   // ===================================================================
-  //  FILE HANDLING API (abrir con…)
+  //  FILE HANDLING
   // ===================================================================
   (async function initFileHandling() {
     try {
@@ -2076,9 +2113,7 @@
         const file = await handle.getFile();
         loadImageFile(file);
       });
-    } catch (e) {
-      console.warn('File Handling init falló:', e);
-    }
+    } catch (e) { console.warn('File Handling init falló:', e); }
   })();
 
   // ===================================================================
@@ -2106,7 +2141,6 @@
     console.log('[ModelDB] Persistencia:', granted ? 'concedida' : 'no concedida');
   });
 
-  // Detectar WebGPU (pasarlo al worker)
   (async () => {
     try {
       if (navigator.gpu) {
