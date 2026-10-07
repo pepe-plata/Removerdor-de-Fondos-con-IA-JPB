@@ -813,11 +813,7 @@ input[type="color"] {
   position: relative;
   box-shadow: var(--shadow-lg);
 }
-#overlayCanvas {
-  pointer-events: none;
-  position: absolute;
-  /* Si el JS le pone width/height explícitos, se escala por CSS */
-}
+
 
 .brush-cursor {
   position: absolute;
@@ -1208,4 +1204,31 @@ input[type="color"] {
     width: 260px;
     min-width: 260px;
   }
+}
+/* ====== MODAL: GUARDAR ====== */
+#saveModal .modal {
+  width: 380px;
+}
+#saveModal select {
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-2);
+  color: var(--text);
+  font-family: inherit;
+  font-size: 13px;
+  outline: none;
+}
+#saveModal select:focus {
+  border-color: var(--primary);
+}
+#saveModal #saveQualityGroup,
+#saveModal #saveExifGroup {
+  display: flex;
+  flex-direction: column;
+}
+#saveModal #saveQualityGroup[hidden],
+#saveModal #saveExifGroup[hidden] {
+  display: none;
 }

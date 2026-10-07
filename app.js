@@ -1,6 +1,6 @@
 // ===================================================================
-//  Removedor de Fondos con IA JPB — PWA (v13)
-//  Incluye optimizaciones GPU condicionales para Android
+//  Removedor de Fondos con IA JPB — PWA (v15)
+//  Canvas único + Modal de guardado unificado
 // ===================================================================
 
 (() => {
@@ -11,19 +11,7 @@
   // ===================================================================
   const IS_ANDROID = /Android/i.test(navigator.userAgent) ||
                      (window.__JPB_IS_ANDROID__ === true);
-  const IS_MOBILE_VIEWPORT = window.matchMedia('(max-width: 720px)').matches;
-  const IS_LOW_GPU = IS_ANDROID;   // aplicar optimizaciones GPU solo en Android
-
-  // Umbral para overlay reducido: imágenes > 4 megapíxeles
-  const LARGE_IMAGE_PIXELS = 4 * 1000 * 1000;
-
-  // Escala del overlay cuando la imagen es grande (0.5 = mitad)
-  const OVERLAY_SCALE_LOW = 0.5;
-
-  // Umbral de blur en Android para no reventar la GPU
-  const MAX_BLUR_LOW = 30;
-
-  console.log('[env] Android:', IS_ANDROID, '| LowGPU:', IS_LOW_GPU);
+  console.log('[env] Android:', IS_ANDROID);
 
   // ===================================================================
   //  SPLASH
@@ -96,8 +84,12 @@
     fill: { enabled: false, color: '#ffffff', opacity: 100 },
     blur: { enabled: false, amount: 15, darken: 0 },
 
-    // Overlay reducido en Android con imágenes grandes
-    overlayScale: 1,
+    // Modal de guardado
+    save: {
+      format: 'png',
+      quality: 92,
+      exif: false
+    },
 
     bgConfig: {
       light: { mode: 'checker', color: '#eef0f5' },
@@ -199,18 +191,22 @@
     canvasViewport: $('canvasViewport'),
     canvasInner: $('canvasInner'),
     mainCanvas: $('mainCanvas'),
-    overlayCanvas: $('overlayCanvas'),
     emptyState: $('emptyState'),
     brushCursor: $('brushCursor'),
     dims: $('dims'),
     zoomVal: $('zoomVal'),
     statusMsg: $('statusMsg'),
-    jpgModal: $('jpgModal'),
-    jpgQuality: $('jpgQuality'),
-    jpgQualityVal: $('jpgQualityVal'),
-    jpgCancel: $('jpgCancel'),
-    jpgConfirm: $('jpgConfirm'),
-    chkExif: $('chkExif'),
+    // Modal Guardar
+    saveModal: $('saveModal'),
+    saveFormat: $('saveFormat'),
+    saveQualityGroup: $('saveQualityGroup'),
+    saveQuality: $('saveQuality'),
+    saveQualityVal: $('saveQualityVal'),
+    saveExifGroup: $('saveExifGroup'),
+    saveExif: $('saveExif'),
+    saveCancel: $('saveCancel'),
+    saveConfirm: $('saveConfirm'),
+    // Otros modales
     modelsModal: $('modelsModal'),
     modelsList: $('modelsList'),
     modelsStorage: $('modelsStorage'),
@@ -232,7 +228,6 @@
   };
 
   const ctx = els.mainCanvas.getContext('2d');
-  const overlayCtx = els.overlayCanvas.getContext('2d');
 
   let originalFileBuffer = null;
   let wakeLock = null;
@@ -707,35 +702,10 @@
 
   function resizeCanvases() {
     const img = state.originalImage;
-
-    // Configurar mainCanvas a resolución completa
     els.mainCanvas.width = img.width;
     els.mainCanvas.height = img.height;
     els.mainCanvas.style.width = img.width + 'px';
     els.mainCanvas.style.height = img.height + 'px';
-
-    // Decidir si usamos overlay reducido (solo Android + imágenes grandes)
-    const totalPixels = img.width * img.height;
-    const useHalfOverlay = IS_LOW_GPU && totalPixels > LARGE_IMAGE_PIXELS;
-
-    if (useHalfOverlay) {
-      state.overlayScale = OVERLAY_SCALE_LOW;
-      const ow = Math.round(img.width * OVERLAY_SCALE_LOW);
-      const oh = Math.round(img.height * OVERLAY_SCALE_LOW);
-      els.overlayCanvas.width = ow;
-      els.overlayCanvas.height = oh;
-      // Escalar visualmente al tamaño original con CSS
-      els.overlayCanvas.style.width = img.width + 'px';
-      els.overlayCanvas.style.height = img.height + 'px';
-      console.log('[overlay] Reducido a', ow + 'x' + oh, '| scale:', OVERLAY_SCALE_LOW);
-    } else {
-      state.overlayScale = 1;
-      els.overlayCanvas.width = img.width;
-      els.overlayCanvas.height = img.height;
-      els.overlayCanvas.style.width = img.width + 'px';
-      els.overlayCanvas.style.height = img.height + 'px';
-    }
-
     els.dims.textContent = `${img.width} × ${img.height} px`;
     els.emptyState.hidden = true;
     els.canvasViewport.hidden = false;
@@ -776,77 +746,69 @@
   }
 
   // ===================================================================
-  //  RENDER
+  //  RENDER — todo en un único canvas
   // ===================================================================
   function render() {
     if (!state.originalImage) return;
+    const w = els.mainCanvas.width;
+    const h = els.mainCanvas.height;
+
+    // 1) Imagen base
     const src = state.displayOriginal ? state.originalCanvas : state.currentCanvas;
-    ctx.clearRect(0, 0, els.mainCanvas.width, els.mainCanvas.height);
+    ctx.clearRect(0, 0, w, h);
     if (src) ctx.drawImage(src, 0, 0);
 
-    // Overlay: coordenadas según su tamaño interno (puede estar reducido)
-    const ow = els.overlayCanvas.width;
-    const oh = els.overlayCanvas.height;
-    overlayCtx.clearRect(0, 0, ow, oh);
-
-    // Overlay rosado de la máscara
+    // 2) Overlay rosado de la máscara (si el editor está activo)
     if (state.maskEditorActive && state.maskCanvas) {
-      const tmp = createCanvas(ow, oh);
+      const tmp = createCanvas(w, h);
       const tctx = tmp.getContext('2d');
       tctx.fillStyle = 'rgba(255, 105, 180, 0.45)';
-      tctx.fillRect(0, 0, ow, oh);
+      tctx.fillRect(0, 0, w, h);
       tctx.globalCompositeOperation = 'destination-in';
-      tctx.drawImage(state.maskCanvas, 0, 0, ow, oh);
-      overlayCtx.drawImage(tmp, 0, 0);
+      tctx.drawImage(state.maskCanvas, 0, 0);
+      ctx.drawImage(tmp, 0, 0);
     }
 
-    // Preview rect / lasso (coordenadas de imagen → overlay coords)
+    // 3) Preview de rect/lasso (encima de todo)
     if (state.maskEditorActive && state.isDrawingShape) {
-      const s = state.overlayScale;
-      overlayCtx.save();
-      overlayCtx.strokeStyle = 'rgba(79, 70, 229, 0.95)';
-      overlayCtx.fillStyle = 'rgba(79, 70, 229, 0.20)';
-      overlayCtx.lineWidth = Math.max(1, (2 / state.zoom) * s);
-      overlayCtx.setLineDash([(6 / state.zoom) * s, (4 / state.zoom) * s]);
+      ctx.save();
+      ctx.strokeStyle = 'rgba(79, 70, 229, 0.95)';
+      ctx.fillStyle = 'rgba(79, 70, 229, 0.20)';
+      ctx.lineWidth = Math.max(1, 2 / state.zoom);
+      ctx.setLineDash([6 / state.zoom, 4 / state.zoom]);
 
       if (state.activeTool === 'rect' && state.shapeStart && state.shapeCurrent) {
-        const x = Math.min(state.shapeStart.x, state.shapeCurrent.x) * s;
-        const y = Math.min(state.shapeStart.y, state.shapeCurrent.y) * s;
-        const w = Math.abs(state.shapeCurrent.x - state.shapeStart.x) * s;
-        const h = Math.abs(state.shapeCurrent.y - state.shapeStart.y) * s;
-        overlayCtx.fillRect(x, y, w, h);
-        overlayCtx.strokeRect(x, y, w, h);
+        const x = Math.min(state.shapeStart.x, state.shapeCurrent.x);
+        const y = Math.min(state.shapeStart.y, state.shapeCurrent.y);
+        const rw = Math.abs(state.shapeCurrent.x - state.shapeStart.x);
+        const rh = Math.abs(state.shapeCurrent.y - state.shapeStart.y);
+        ctx.fillRect(x, y, rw, rh);
+        ctx.strokeRect(x, y, rw, rh);
       } else if (state.activeTool === 'lasso' && state.lassoPoints.length > 1) {
-        overlayCtx.beginPath();
-        overlayCtx.moveTo(state.lassoPoints[0].x * s, state.lassoPoints[0].y * s);
+        ctx.beginPath();
+        ctx.moveTo(state.lassoPoints[0].x, state.lassoPoints[0].y);
         for (let i = 1; i < state.lassoPoints.length; i++) {
-          overlayCtx.lineTo(state.lassoPoints[i].x * s, state.lassoPoints[i].y * s);
+          ctx.lineTo(state.lassoPoints[i].x, state.lassoPoints[i].y);
         }
-        overlayCtx.closePath();
-        overlayCtx.fill();
-        overlayCtx.stroke();
+        ctx.closePath();
+        ctx.fill();
+        ctx.stroke();
       }
-      overlayCtx.restore();
+      ctx.restore();
     }
   }
 
-  /**
-   * Aplica la máscara a currentCanvas con soporte para fill y blur.
-   * En Android, el blur se hace con downscale+upscale para reducir la carga GPU.
-   */
   function applyMaskToCurrent() {
     if (!state.originalCanvas || !state.maskCanvas) return;
     const w = state.originalCanvas.width;
     const h = state.originalCanvas.height;
 
-    // 1) Recorte (imagen original con alpha de la máscara)
     const cut = createCanvas(w, h);
     const cctx = cut.getContext('2d');
     cctx.drawImage(state.originalCanvas, 0, 0);
     cctx.globalCompositeOperation = 'destination-in';
     cctx.drawImage(state.maskCanvas, 0, 0);
 
-    // 2) Fondo
     const cc = state.currentCanvas.getContext('2d');
     cc.clearRect(0, 0, w, h);
 
@@ -856,37 +818,26 @@
       const bctx = bg.getContext('2d');
 
       if (state.blur.enabled && state.blur.amount > 0) {
-        if (IS_LOW_GPU) {
-          // === Optimización Android: downscale + upscale ===
-          // Dibujamos la imagen a 1/4 de tamaño, aplicamos filter: blur() sobre
-          // el canvas pequeño (que es MUCHO más barato en GPU), y luego
-          // escalamos al tamaño final con imageSmoothing de alta calidad.
+        if (IS_ANDROID) {
+          // Bokeh con downscale + upscale en Android
           const bw = Math.max(1, Math.round(w / 4));
           const bh = Math.max(1, Math.round(h / 4));
-
           const small = createCanvas(bw, bh);
           const sctx = small.getContext('2d');
           sctx.imageSmoothingEnabled = true;
           sctx.imageSmoothingQuality = 'high';
-
-          // El blur se aplica al reducir: usamos el blur proporcional (1/4 del solicitado)
           const scaledBlur = Math.max(1, state.blur.amount / 4);
           sctx.filter = `blur(${scaledBlur}px)`;
           sctx.drawImage(state.originalCanvas, 0, 0, bw, bh);
           sctx.filter = 'none';
-
-          // Upscale al tamaño final
           bctx.imageSmoothingEnabled = true;
           bctx.imageSmoothingQuality = 'high';
           bctx.drawImage(small, 0, 0, bw, bh, 0, 0, w, h);
         } else {
-          // Desktop: blur nativo al tamaño completo
           bctx.filter = `blur(${state.blur.amount}px)`;
           bctx.drawImage(state.originalCanvas, 0, 0);
           bctx.filter = 'none';
         }
-
-        // Oscurecer fondo
         if (state.blur.darken > 0) {
           bctx.fillStyle = `rgba(0,0,0,${state.blur.darken / 100})`;
           bctx.fillRect(0, 0, w, h);
@@ -897,11 +848,8 @@
         bctx.fillStyle = `rgba(${rgb.r}, ${rgb.g}, ${rgb.b}, ${alpha})`;
         bctx.fillRect(0, 0, w, h);
       }
-
       cc.drawImage(bg, 0, 0);
     }
-
-    // 3) Sujeto encima
     cc.drawImage(cut, 0, 0);
 
     state.hasProcessed = true;
@@ -1003,7 +951,7 @@
   }, { passive: false });
 
   // ===================================================================
-  //  POINTERS (con delay para Android)
+  //  POINTERS
   // ===================================================================
   function cancelPendingStroke() {
     if (state.pendingStroke) {
@@ -1610,7 +1558,6 @@
   });
   els.smartColor.addEventListener('input', (e) => els.smartColorVal.textContent = e.target.value);
   els.smartEdge.addEventListener('input', (e) => els.smartEdgeVal.textContent = e.target.value);
-  if (els.chkExif) els.chkExif.addEventListener('change', (e) => { state.copyExif = e.target.checked; });
 
   // ===================================================================
   //  HEADER ACTIONS
@@ -1650,91 +1597,124 @@
   });
 
   // ===================================================================
-  //  GUARDAR
+  //  GUARDAR — modal unificado
   // ===================================================================
-  els.btnSave.addEventListener('click', async () => {
+  const FORMAT_INFO = {
+    png:  { mime: 'image/png',  ext: 'png',  quality: false, exif: false },
+    jpg:  { mime: 'image/jpeg', ext: 'jpg',  quality: true,  exif: true  },
+    webp: { mime: 'image/webp', ext: 'webp', quality: true,  exif: false },
+    bmp:  { mime: 'image/bmp',  ext: 'bmp',  quality: false, exif: false }
+  };
+
+  els.btnSave.addEventListener('click', () => {
     if (!state.originalCanvas) return;
-    if (typeof window.showSaveFilePicker === 'function') await saveWithFilePicker();
-    else saveWithFallback();
+    openSaveModal();
   });
-  async function saveWithFilePicker() {
-    try {
-      const handle = await window.showSaveFilePicker({
-        suggestedName: `${state.originalFileName}-sin-fondo.png`,
-        types: [
-          { description: 'PNG', accept: { 'image/png': ['.png'] } },
-          { description: 'JPEG', accept: { 'image/jpeg': ['.jpg', '.jpeg'] } },
-          { description: 'WebP', accept: { 'image/webp': ['.webp'] } },
-          { description: 'BMP', accept: { 'image/bmp': ['.bmp'] } }
-        ]
-      });
-      const ext = handle.name.split('.').pop().toLowerCase();
-      let mime = 'image/png', quality;
-      if (ext === 'jpg' || ext === 'jpeg') mime = 'image/jpeg';
-      else if (ext === 'webp') mime = 'image/webp';
-      else if (ext === 'bmp') mime = 'image/bmp';
-      if (mime === 'image/jpeg') {
-        quality = await askJpgQuality();
-        if (quality === null) return;
-        quality = quality / 100;
-      }
-      let blob = await new Promise(res => els.mainCanvas.toBlob(res, mime, quality));
-      if (mime === 'image/jpeg' && state.copyExif) {
-        try { blob = await injectExif(blob); } catch (e) { console.warn(e); }
-      }
-      const writable = await handle.createWritable();
-      await writable.write(blob);
-      await writable.close();
-      setStatus('Guardado ✓');
-    } catch (err) {
-      if (err.name === 'AbortError') return;
-      setStatus('Error al guardar: ' + err.message);
-    }
+
+  function openSaveModal() {
+    // Resetear valores al abrir
+    els.saveFormat.value = state.save.format || 'png';
+    els.saveQuality.value = state.save.quality || 92;
+    els.saveQualityVal.textContent = els.saveQuality.value;
+    els.saveExif.checked = !!state.save.exif;
+    updateSaveModalVisibility();
+    els.saveModal.hidden = false;
   }
-  function saveWithFallback() {
-    const format = prompt('Formato de salida:\n1 = PNG\n2 = JPG\n3 = WebP\n4 = BMP', '1');
-    if (!format) return;
-    let ext = 'png', mime = 'image/png', quality;
-    if (format === '2') { ext = 'jpg'; mime = 'image/jpeg'; }
-    else if (format === '3') { ext = 'webp'; mime = 'image/webp'; }
-    else if (format === '4') { ext = 'bmp'; mime = 'image/bmp'; }
-    if (mime === 'image/jpeg') {
-      askJpgQuality().then(q => {
-        if (q === null) return;
-        doFallbackSave(ext, mime, q / 100);
-      });
-    } else doFallbackSave(ext, mime, undefined);
+
+  function updateSaveModalVisibility() {
+    const fmt = els.saveFormat.value;
+    const info = FORMAT_INFO[fmt] || FORMAT_INFO.png;
+    els.saveQualityGroup.hidden = !info.quality;
+    els.saveExifGroup.hidden = !info.exif;
   }
-  async function doFallbackSave(ext, mime, quality) {
-    let blob = await new Promise(res => els.mainCanvas.toBlob(res, mime, quality));
-    if (mime === 'image/jpeg' && state.copyExif) {
-      try { blob = await injectExif(blob); } catch (e) { console.warn(e); }
+
+  els.saveFormat.addEventListener('change', () => {
+    state.save.format = els.saveFormat.value;
+    updateSaveModalVisibility();
+  });
+
+  els.saveQuality.addEventListener('input', (e) => {
+    state.save.quality = parseInt(e.target.value);
+    els.saveQualityVal.textContent = state.save.quality;
+  });
+
+  els.saveCancel.addEventListener('click', () => {
+    els.saveModal.hidden = true;
+  });
+
+  els.saveModal.addEventListener('click', (e) => {
+    if (e.target === els.saveModal) els.saveModal.hidden = true;
+  });
+
+  els.saveConfirm.addEventListener('click', async () => {
+    state.save.format = els.saveFormat.value;
+    state.save.quality = parseInt(els.saveQuality.value);
+    state.save.exif = els.saveExif.checked;
+    state.copyExif = state.save.exif; // mantener compatibilidad
+    els.saveModal.hidden = true;
+    await performSave();
+  });
+
+  async function performSave() {
+    const fmt = state.save.format || 'png';
+    const info = FORMAT_INFO[fmt] || FORMAT_INFO.png;
+
+    // 1) Render limpio (sin overlay) al currentCanvas para exportar
+    const exportCanvas = buildExportCanvas();
+    const mime = info.mime;
+    const quality = info.quality ? (state.save.quality / 100) : undefined;
+
+    // 2) Generar el blob
+    let blob = await new Promise(res => exportCanvas.toBlob(res, mime, quality));
+    if (!blob) {
+      setStatus('Error al generar la imagen');
+      return;
     }
+
+    // 3) Inyectar EXIF si aplica
+    if (info.exif && state.save.exif) {
+      try { blob = await injectExif(blob, mime); }
+      catch (e) { console.warn('No se pudo inyectar EXIF:', e); }
+    }
+
+    // 4) Guardar con File System Access API o fallback
+    if (typeof window.showSaveFilePicker === 'function') {
+      try {
+        const handle = await window.showSaveFilePicker({
+          suggestedName: `${state.originalFileName}-sin-fondo.${info.ext}`,
+          types: [{ description: fmt.toUpperCase(), accept: { [mime]: ['.' + info.ext] } }]
+        });
+        const writable = await handle.createWritable();
+        await writable.write(blob);
+        await writable.close();
+        setStatus('Guardado ✓');
+        return;
+      } catch (err) {
+        if (err.name === 'AbortError') return;
+        console.warn('showSaveFilePicker falló, usando fallback:', err);
+      }
+    }
+
+    // Fallback: descarga directa
     const a = document.createElement('a');
-    a.download = `${state.originalFileName}-sin-fondo.${ext}`;
+    a.download = `${state.originalFileName}-sin-fondo.${info.ext}`;
     a.href = URL.createObjectURL(blob);
     a.click();
     setTimeout(() => URL.revokeObjectURL(a.href), 2000);
     setStatus('Guardado ✓');
   }
-  function askJpgQuality() {
-    return new Promise((resolve) => {
-      els.jpgModal.hidden = false;
-      els.jpgQualityVal.textContent = els.jpgQuality.value;
-      els.chkExif.checked = state.copyExif;
-      const onInput = () => els.jpgQualityVal.textContent = els.jpgQuality.value;
-      const onConfirm = () => { state.copyExif = els.chkExif.checked; cleanup(); resolve(parseInt(els.jpgQuality.value)); };
-      const onCancel = () => { cleanup(); resolve(null); };
-      const cleanup = () => {
-        els.jpgModal.hidden = true;
-        els.jpgQuality.removeEventListener('input', onInput);
-        els.jpgConfirm.removeEventListener('click', onConfirm);
-        els.jpgCancel.removeEventListener('click', onCancel);
-      };
-      els.jpgQuality.addEventListener('input', onInput);
-      els.jpgConfirm.addEventListener('click', onConfirm);
-      els.jpgCancel.addEventListener('click', onCancel);
-    });
+
+  /**
+   * Construye un canvas de exportación que NO incluye el overlay rosado
+   * ni las previews de forma. Solo imagen + efectos (fill/blur) aplicados.
+   */
+  function buildExportCanvas() {
+    const w = state.currentCanvas.width;
+    const h = state.currentCanvas.height;
+    const c = createCanvas(w, h);
+    const cx = c.getContext('2d');
+    cx.drawImage(state.currentCanvas, 0, 0);
+    return c;
   }
 
   // ===================================================================
@@ -1771,12 +1751,13 @@
     out.set(jpegBytes.subarray(2), 2 + exifSegment.length);
     return out;
   }
-  async function injectExif(newJpegBlob) {
-    if (!originalFileBuffer) return newJpegBlob;
+  async function injectExif(blob, mime) {
+    if (mime !== 'image/jpeg') return blob;
+    if (!originalFileBuffer) return blob;
     const origBytes = new Uint8Array(originalFileBuffer);
     const exifSegment = extractExifSegment(origBytes);
-    if (!exifSegment) return newJpegBlob;
-    const newBytes = new Uint8Array(await newJpegBlob.arrayBuffer());
+    if (!exifSegment) return blob;
+    const newBytes = new Uint8Array(await blob.arrayBuffer());
     const merged = insertExifIntoJpeg(newBytes, exifSegment);
     return new Blob([merged], { type: 'image/jpeg' });
   }
@@ -2112,15 +2093,10 @@
     console.log('[ModelDB] Persistencia:', granted ? 'concedida' : 'no concedida');
   });
 
-    // ===================================================================
-  //  BACKEND DE IA
-  //  Forzamos WASM (CPU) en Android para evitar contención con el compositor
-  //  de Chrome. En escritorio seguimos usando WebGPU si está disponible.
-  // ===================================================================
   (async () => {
     if (IS_ANDROID) {
-      console.log('[backend] Android detectado → usando WASM (CPU) para IA');
       worker.postMessage({ type: 'force-wasm' });
+      console.log('[backend] Android → WASM');
       return;
     }
     try {
@@ -2129,17 +2105,10 @@
         if (adapter) {
           worker.postMessage({ type: 'enable-webgpu' });
           console.log('[WebGPU] Adaptador disponible');
-        } else {
-          console.log('[backend] Sin adaptador WebGPU → usando WASM');
         }
-      } else {
-        console.log('[backend] WebGPU no soportado → usando WASM');
       }
-    } catch (e) {
-      console.warn('[backend] WebGPU no disponible:', e);
-    }
+    } catch (e) { console.warn('WebGPU no disponible:', e); }
   })();
-  
 
   updateUI();
   updateFillUI();

@@ -8,15 +8,12 @@
 <link rel="manifest" href="manifest.json" />
 <link rel="stylesheet" href="styles.css" />
 
-<!-- Detección temprana de Android para aplicar optimizaciones GPU antes del primer pintado -->
 <script>
   (function () {
     try {
       var isAndroid = /Android/i.test(navigator.userAgent);
       window.__JPB_IS_ANDROID__ = isAndroid;
-      if (isAndroid) {
-        document.documentElement.classList.add('low-gpu');
-      }
+      if (isAndroid) document.documentElement.classList.add('low-gpu');
     } catch (_) {}
   })();
 </script>
@@ -113,6 +110,7 @@
       <div id="processStatus" class="status">Listo</div>
     </div>
 
+    <!-- MASK EDITOR -->
     <div class="panel-section">
       <label class="check-field title-check">
         <input type="checkbox" id="maskEditorToggle" />
@@ -183,6 +181,7 @@
       </div>
     </div>
 
+    <!-- COLOR REMOVAL -->
     <div class="panel-section collapsible" data-section="color">
       <h2 class="section-title">
         <span class="icon-title">
@@ -225,6 +224,7 @@
       </div>
     </div>
 
+    <!-- FILL BACKGROUND -->
     <div class="panel-section collapsible" data-section="fill">
       <h2 class="section-title">
         <span class="icon-title">
@@ -281,6 +281,7 @@
       </div>
     </div>
 
+    <!-- BACKGROUND BLUR -->
     <div class="panel-section collapsible" data-section="blur">
       <h2 class="section-title">
         <span class="icon-title">
@@ -320,6 +321,7 @@
       </div>
     </div>
 
+    <!-- CANVAS BACKGROUND COLOR -->
     <div class="panel-section collapsible" data-section="bg">
       <h2 class="section-title">
         <span class="icon-title">
@@ -390,8 +392,8 @@
 
     <div class="canvas-viewport" id="canvasViewport" hidden>
       <div class="canvas-inner" id="canvasInner">
+        <!-- Canvas ÚNICO: dibuja imagen + overlay rosado + preview de formas -->
         <canvas id="mainCanvas"></canvas>
-        <canvas id="overlayCanvas"></canvas>
       </div>
     </div>
 
@@ -407,25 +409,42 @@
   <span id="statusMsg">Listo</span>
 </footer>
 
-<!-- ================= MODAL: CALIDAD JPG + EXIF ================= -->
-<div class="modal-backdrop" id="jpgModal" hidden>
+<!-- ================= MODAL: GUARDAR ================= -->
+<div class="modal-backdrop" id="saveModal" hidden>
   <div class="modal">
-    <h3>Calidad JPEG</h3>
-    <p class="modal-desc">Selecciona la calidad de compresión</p>
+    <h3>Guardar imagen</h3>
+    <p class="modal-desc">Selecciona el formato y las opciones</p>
+
     <label class="field">
-      <span>Calidad: <b id="jpgQualityVal">92</b>%</span>
-      <input type="range" id="jpgQuality" min="1" max="100" value="92" />
+      <span>Formato</span>
+      <select id="saveFormat">
+        <option value="png">PNG (transparencia)</option>
+        <option value="jpg">JPG (JPEG)</option>
+        <option value="webp">WebP</option>
+        <option value="bmp">BMP (sin transparencia)</option>
+      </select>
     </label>
-    <label class="check-field" style="margin-top:6px;">
-      <input type="checkbox" id="chkExif" />
-      <span>Copiar Metadatos EXIF del original</span>
-    </label>
+
+    <div id="saveQualityGroup" hidden>
+      <label class="field">
+        <span>Calidad JPEG: <b id="saveQualityVal">92</b>%</span>
+        <input type="range" id="saveQuality" min="1" max="100" value="92" />
+      </label>
+    </div>
+
+    <div id="saveExifGroup" hidden>
+      <label class="check-field">
+        <input type="checkbox" id="saveExif" />
+        <span>Copiar Metadatos EXIF del original</span>
+      </label>
+    </div>
+
     <div class="modal-actions">
-      <button id="jpgCancel" class="secondary-btn">
+      <button id="saveCancel" class="secondary-btn">
         <img src="icons/cancel.png" alt="" class="btn-icon" />
         <span>Cancelar</span>
       </button>
-      <button id="jpgConfirm" class="primary-btn">
+      <button id="saveConfirm" class="primary-btn">
         <img src="icons/ok.png" alt="" class="btn-icon" />
         <span>Guardar</span>
       </button>
@@ -488,20 +507,17 @@
         <h4>Instalar como app</h4>
         <ol>
           <li>Abre esta página en <b>Chrome para Android</b>.</li>
-          <li>Pulsa el menú <b>⋮</b> (esquina superior derecha).</li>
+          <li>Pulsa el menú <b>⋮</b>.</li>
           <li>Selecciona <b>"Añadir a pantalla de inicio"</b> o <b>"Instalar app"</b>.</li>
-          <li>Confirma el nombre y pulsa <b>Añadir</b>.</li>
         </ol>
-        <h4>Compartir desde otras apps</h4>
-        <p>Una vez instalada, puedes enviar imágenes desde la Galería, WhatsApp, etc. usando el botón <b>Compartir</b> y eligiendo <b>Removedor JPB</b>.</p>
+        <h4>Guardar</h4>
+        <p>Al pulsar <b>Guardar</b> aparece un diálogo para elegir el formato (PNG, JPG, WebP o BMP) y, si eliges JPG, la calidad y la copia de metadatos EXIF.</p>
         <h4>Gestos táctiles</h4>
         <ul>
-          <li><b>1 dedo:</b> pan (mover la imagen).</li>
-          <li><b>2 dedos:</b> pinch-zoom + pan simultáneo.</li>
-          <li><b>Con editor de máscara:</b> 1 dedo dibuja; 2 dedos siguen haciendo zoom/pan (el trazo del 1er dedo se cancela al detectar el 2º).</li>
+          <li><b>1 dedo:</b> pan.</li>
+          <li><b>2 dedos:</b> pinch-zoom.</li>
+          <li><b>Con editor:</b> 1 dedo dibuja; 2 dedos hacen zoom.</li>
         </ul>
-        <h4>Wake Lock</h4>
-        <p>Mientras la IA procesa, la pantalla no se apagará automáticamente.</p>
       </div>
 
       <div class="help-panel" data-panel="windows">
@@ -510,14 +526,10 @@
           <li>Abre esta página en <b>Chrome</b> o <b>Edge</b>.</li>
           <li>Pulsa el icono <b>⊕ Instalar</b> en la barra de direcciones.</li>
         </ol>
+        <h4>Guardar</h4>
+        <p>Al pulsar <b>Guardar</b> aparece un diálogo para elegir el formato (PNG, JPG, WebP o BMP) y, si eliges JPG, la calidad y la copia de metadatos EXIF.</p>
         <h4>Abrir con la app</h4>
-        <p>Con la app instalada, puedes hacer clic derecho en una imagen y elegir <b>Abrir con → Removedor JPB</b> desde el explorador de Windows.</p>
-        <h4>Uso básico</h4>
-        <ol>
-          <li>Pulsa <b>Abrir</b> o arrastra una imagen.</li>
-          <li>También puedes pegar con <b>Ctrl+V</b>.</li>
-          <li>Elige modelo y pulsa <b>Remover Fondo</b>.</li>
-        </ol>
+        <p>Con la app instalada, puedes hacer clic derecho en una imagen y elegir <b>Abrir con → Removedor JPB</b>.</p>
       </div>
 
       <div class="help-panel" data-panel="shortcuts">
@@ -531,7 +543,7 @@
           <li><b>Ctrl + Y</b>: Rehacer (solo en edición de máscara)</li>
           <li><b>+</b> o <b>=</b>: Zoom in</li>
           <li><b>-</b> o <b>_</b>: Zoom out</li>
-          <li><b>0</b>: Ajustar a ventana (Zoom Fit)</li>
+          <li><b>0</b>: Ajustar a ventana</li>
           <li><b>1</b>: Zoom al 100%</li>
           <li><b>[</b>: Reducir tamaño del pincel (-5 px)</li>
           <li><b>]</b>: Aumentar tamaño del pincel (+5 px)</li>
@@ -542,13 +554,13 @@
           <li><b>Rueda:</b> zoom hacia el cursor</li>
           <li><b>Shift + rueda:</b> scroll horizontal</li>
           <li><b>Alt + rueda:</b> scroll vertical</li>
-          <li><b>Botón medio / derecho (arrastrar):</b> pan</li>
+          <li><b>Botón medio / derecho:</b> pan</li>
         </ul>
       </div>
 
       <div class="help-panel" data-panel="general">
         <h4>¿Cómo funciona?</h4>
-        <p>Todo se ejecuta <b>localmente</b> en tu dispositivo usando <b>WebGPU</b> (si está disponible) o <b>WebAssembly</b>. Ninguna imagen se sube a ningún servidor.</p>
+        <p>Todo se ejecuta <b>localmente</b>. En Android la IA usa <b>CPU (WASM)</b>; en escritorio usa <b>WebGPU</b> o WASM.</p>
         <h4>Modelos disponibles</h4>
         <ul>
           <li><b>U²-Netp (4.7 MB):</b> rápido.</li>
@@ -559,26 +571,13 @@
         </ul>
         <h4>Herramientas del editor de máscara</h4>
         <ul>
-          <li><b>Pincel:</b> pinta libremente con tamaño ajustable.</li>
-          <li><b>Rectángulo:</b> arrastra para seleccionar un área rectangular.</li>
-          <li><b>Lazo:</b> dibuja una forma cerrada a mano alzada.</li>
-          <li><b>Varita mágica:</b> clic en una zona de color uniforme para seleccionarla.</li>
+          <li><b>Pincel:</b> pinta libremente.</li>
+          <li><b>Rectángulo:</b> selección geométrica.</li>
+          <li><b>Lazo:</b> forma a mano alzada.</li>
+          <li><b>Varita mágica:</b> selección por color uniforme.</li>
         </ul>
-        <h4>Modos</h4>
-        <ul>
-          <li><b>Añadir:</b> mantiene la zona en la imagen final.</li>
-          <li><b>Quitar:</b> elimina la zona (transparente).</li>
-        </ul>
-        <h4>Desenfoque de fondo (bokeh)</h4>
-        <p>Aplica desenfoque gaussiano al fondo. Puedes combinarlo con relleno de color para conseguir efectos de retrato.</p>
         <h4>Historial</h4>
-        <p>El editor de máscara guarda hasta 30 pasos. Usa <b>Ctrl+Z</b> / <b>Ctrl+Y</b> o los botones flotantes.</p>
-        <h4>Consejos</h4>
-        <ul>
-          <li>Empieza con <b>U²-Netp</b> para probar rápido.</li>
-          <li>Usa <b>U²-Net Human</b> para retratos.</li>
-          <li>Para bordes complejos (pelo, encaje) usa <b>ISNet</b>.</li>
-        </ul>
+        <p>El editor guarda hasta 30 pasos. Usa <b>Ctrl+Z</b> / <b>Ctrl+Y</b> o los botones flotantes.</p>
       </div>
     </div>
 
