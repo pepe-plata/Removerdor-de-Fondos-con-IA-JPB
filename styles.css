@@ -1124,15 +1124,20 @@ input[type="color"] {
 /* ===================================================================
    RESPONSIVE — Android / móvil
    =================================================================== */
+/* ===================================================================
+   RESPONSIVE — Android / móvil
+   =================================================================== */
 @media (max-width: 720px) {
 
-  /* ===== Sidebar como drawer deslizante ===== */
+  /* ===== Sidebar como drawer deslizante =====
+     Usamos `position: absolute` (dentro de .app-main) en lugar de `fixed`.
+     `fixed` en Chrome Android crea una capa GPU que bloquea el render
+     del canvas cuando hay `transform: translateX(-100%)`. */
   .sidebar {
-    position: fixed;
+    position: absolute;
     top: 0;
     left: 0;
-    height: 100vh;
-    height: 100dvh;
+    height: 100%;
     width: 280px;
     min-width: 280px;
     padding-top: 10px;
@@ -1151,6 +1156,7 @@ input[type="color"] {
   /* Neutralizar regla de colapso de escritorio */
   .app-main.sidebar-collapsed .sidebar {
     margin-left: 0 !important;
+    transform: translateX(-100%);
   }
 
   /* Mostrar header interno del sidebar */
@@ -1160,7 +1166,7 @@ input[type="color"] {
 
   /* Overlay para cerrar tocando fuera */
   .sidebar-overlay {
-    position: fixed;
+    position: absolute;
     inset: 0;
     z-index: 50;
   }
