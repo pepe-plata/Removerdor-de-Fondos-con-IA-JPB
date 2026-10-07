@@ -1,6 +1,7 @@
 /* ===================================================================
-   Removedor de Fondos con IA JPB — Estilos (v15)
-   Incluye optimizaciones GPU para Android vía clase .low-gpu en <html>
+   Removedor de Fondos con IA JPB — Estilos (v16)
+   - Sidebar drawer en Android con position: fixed + 100dvh
+   - Optimizaciones GPU para Android vía clase .low-gpu en <html>
    =================================================================== */
 
 /* ====== VARIABLES ====== */
@@ -60,6 +61,7 @@ body {
   touch-action: none;
 }
 
+/* Iconos: invertir en tema oscuro */
 [data-theme="dark"] .icon-btn img,
 [data-theme="dark"] .btn-icon,
 [data-theme="dark"] .section-icon,
@@ -123,6 +125,7 @@ body {
   box-shadow: var(--shadow);
   gap: 8px;
   flex-shrink: 0;
+  position: relative;
 }
 .header-left {
   display: flex;
@@ -347,7 +350,7 @@ body {
   position: relative;
 }
 
-/* ====== SIDEBAR ====== */
+/* ====== SIDEBAR (desktop) ====== */
 .sidebar {
   width: 300px;
   min-width: 300px;
@@ -359,6 +362,8 @@ body {
   flex-direction: column;
   gap: 10px;
   transition: margin-left .25s ease;
+  position: relative;
+  z-index: 60;
 }
 .sidebar::-webkit-scrollbar { width: 8px; }
 .sidebar::-webkit-scrollbar-thumb {
@@ -366,6 +371,7 @@ body {
   border-radius: 4px;
 }
 
+/* Sidebar colapsado en desktop */
 .app-main.sidebar-collapsed .sidebar {
   margin-left: -300px;
 }
@@ -801,8 +807,19 @@ input[type="color"] {
   top: 0;
   left: 0;
   transform-origin: 0 0;
-  /* will-change: transform  — movido a .low-gpu para Android */
+  contain: strict;
+  will-change: transform;
 }
+
+/* En Android, evitar que Chrome promocione el canvas a capas GPU extra */
+.low-gpu .canvas-inner {
+  will-change: auto;
+}
+.low-gpu #mainCanvas {
+  box-shadow: none;
+  contain: strict;
+}
+
 .canvas-inner canvas {
   position: absolute;
   top: 0;
@@ -814,7 +831,6 @@ input[type="color"] {
   box-shadow: var(--shadow-lg);
 }
 
-
 .brush-cursor {
   position: absolute;
   border: 2px solid #fff;
@@ -823,14 +839,16 @@ input[type="color"] {
   transform: translate(-50%, -50%);
   box-shadow:
     0 0 0 1px rgba(0,0,0,.85),
-    inset 0 0 0 1px rgba(0,0,0,.6),
-    inset 0 0 0 3px rgba(255,255,255,.85);
+    inset 0 0 0 1px rgba(0,0,0,.6);
   display: none;
   z-index: 50;
-  /* mix-blend-mode: difference  — quitado para Android en .low-gpu */
 }
 .brush-cursor.show {
   display: block;
+}
+.low-gpu .brush-cursor {
+  /* Sin mix-blend-mode en Android para ahorrar capas GPU */
+  mix-blend-mode: normal;
 }
 
 /* ====== FOOTER ====== */
@@ -906,6 +924,34 @@ input[type="color"] {
   display: flex;
   gap: 8px;
   justify-content: flex-end;
+}
+
+/* ====== MODAL: GUARDAR ====== */
+#saveModal .modal {
+  width: 380px;
+}
+#saveModal select {
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-2);
+  color: var(--text);
+  font-family: inherit;
+  font-size: 13px;
+  outline: none;
+}
+#saveModal select:focus {
+  border-color: var(--primary);
+}
+#saveModal #saveQualityGroup,
+#saveModal #saveExifGroup {
+  display: flex;
+  flex-direction: column;
+}
+#saveModal #saveQualityGroup[hidden],
+#saveModal #saveExifGroup[hidden] {
+  display: none;
 }
 
 /* ====== MODAL: LISTA DE MODELOS ====== */
@@ -1073,63 +1119,50 @@ input[type="color"] {
 }
 
 /* ===================================================================
-   OPTIMIZACIONES GPU PARA ANDROID (.low-gpu en <html>)
+   RESPONSIVE — Android / móvil
    =================================================================== */
-.low-gpu .brush-cursor {
-  /* Quitar mix-blend-mode: difference (evita capa GPU costosa) */
-  mix-blend-mode: normal;
-  /* Anillo dual: borde blanco + borde negro + relleno suave para visibilidad */
-  border: 2px solid #ffffff;
-  box-shadow:
-    0 0 0 1px rgba(0,0,0,.9),
-    inset 0 0 0 1px rgba(0,0,0,.7);
-}
-
-.low-gpu .canvas-inner {
-  will-change: auto;
-}
-
-.low-gpu #mainCanvas {
-  /* Sin sombra en Android cuando la imagen es muy grande */
-  box-shadow: none;
-}
-
-.low-gpu .app-header,
-.low-gpu .sidebar,
-.low-gpu .floating-toolbar {
-  /* No forzar promoción de capa en Android */
-  transform: none;
-  will-change: auto;
-}
-
-/* ====== RESPONSIVE ====== */
 @media (max-width: 720px) {
+
+  /* ===== Sidebar como drawer deslizante (fixed para asegurar posición) ===== */
   .sidebar {
-    position: absolute;
+    position: fixed;
     top: 0;
     left: 0;
-    height: 100%;
-    transform: translateX(-100%);
-    transition: transform .28s cubic-bezier(.4,0,.2,1);
-    z-index: 50;
-    box-shadow: var(--shadow-lg);
+    height: 100vh;
+    height: 100dvh;
     width: 280px;
     min-width: 280px;
     padding-top: 10px;
     margin-left: 0 !important;
+    transform: translateX(-100%);
+    transition: transform .28s cubic-bezier(.4,0,.2,1);
+    z-index: 60;
+    box-shadow: none;
+    will-change: auto;
   }
   .sidebar.open {
     transform: translateX(0);
-  }
-  .app-main.sidebar-collapsed .sidebar {
-    margin-left: 0;
-    transform: translateX(-100%);
+    box-shadow: var(--shadow-lg);
   }
 
+  /* Neutralizar cualquier regla de colapso de escritorio */
+  .app-main.sidebar-collapsed .sidebar {
+    margin-left: 0 !important;
+  }
+
+  /* Mostrar el header interno del sidebar */
   .sidebar-header {
     display: flex;
   }
 
+  /* Overlay para cerrar tocando fuera */
+  .sidebar-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 50;
+  }
+
+  /* Header compacto */
   .file-name {
     max-width: 100px;
     font-size: 12px;
@@ -1204,31 +1237,4 @@ input[type="color"] {
     width: 260px;
     min-width: 260px;
   }
-}
-/* ====== MODAL: GUARDAR ====== */
-#saveModal .modal {
-  width: 380px;
-}
-#saveModal select {
-  width: 100%;
-  padding: 8px 10px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  background: var(--bg-2);
-  color: var(--text);
-  font-family: inherit;
-  font-size: 13px;
-  outline: none;
-}
-#saveModal select:focus {
-  border-color: var(--primary);
-}
-#saveModal #saveQualityGroup,
-#saveModal #saveExifGroup {
-  display: flex;
-  flex-direction: column;
-}
-#saveModal #saveQualityGroup[hidden],
-#saveModal #saveExifGroup[hidden] {
-  display: none;
 }
