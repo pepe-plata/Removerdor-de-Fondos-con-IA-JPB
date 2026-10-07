@@ -1,6 +1,7 @@
 /* ===================================================================
-   Removedor de Fondos con IA JPB — Estilos (v16)
-   - Sidebar drawer en Android con position: fixed + 100dvh
+   Removedor de Fondos con IA JPB — Estilos (v17)
+   - Sin contain:strict (colapsaba el canvas a 0×0)
+   - Sidebar drawer en Android con position:fixed + 100dvh
    - Optimizaciones GPU para Android vía clase .low-gpu en <html>
    =================================================================== */
 
@@ -802,22 +803,16 @@ input[type="color"] {
   display: none;
 }
 
+/* ====== CANVAS INNER + MAIN CANVAS ======
+   OJO: NO usar `contain: strict` aquí.
+   El .canvas-inner es absolute sin width/height, así que `contain: size`
+   lo colapsaría a 0×0 y el canvas no se vería. */
 .canvas-inner {
   position: absolute;
   top: 0;
   left: 0;
   transform-origin: 0 0;
-  contain: strict;
   will-change: transform;
-}
-
-/* En Android, evitar que Chrome promocione el canvas a capas GPU extra */
-.low-gpu .canvas-inner {
-  will-change: auto;
-}
-.low-gpu #mainCanvas {
-  box-shadow: none;
-  contain: strict;
 }
 
 .canvas-inner canvas {
@@ -826,9 +821,18 @@ input[type="color"] {
   left: 0;
   display: block;
 }
+
 #mainCanvas {
   position: relative;
   box-shadow: var(--shadow-lg);
+}
+
+/* Optimizaciones Android */
+.low-gpu .canvas-inner {
+  will-change: auto;
+}
+.low-gpu #mainCanvas {
+  box-shadow: none;
 }
 
 .brush-cursor {
@@ -847,7 +851,6 @@ input[type="color"] {
   display: block;
 }
 .low-gpu .brush-cursor {
-  /* Sin mix-blend-mode en Android para ahorrar capas GPU */
   mix-blend-mode: normal;
 }
 
@@ -1123,7 +1126,7 @@ input[type="color"] {
    =================================================================== */
 @media (max-width: 720px) {
 
-  /* ===== Sidebar como drawer deslizante (fixed para asegurar posición) ===== */
+  /* ===== Sidebar como drawer deslizante ===== */
   .sidebar {
     position: fixed;
     top: 0;
@@ -1145,12 +1148,12 @@ input[type="color"] {
     box-shadow: var(--shadow-lg);
   }
 
-  /* Neutralizar cualquier regla de colapso de escritorio */
+  /* Neutralizar regla de colapso de escritorio */
   .app-main.sidebar-collapsed .sidebar {
     margin-left: 0 !important;
   }
 
-  /* Mostrar el header interno del sidebar */
+  /* Mostrar header interno del sidebar */
   .sidebar-header {
     display: flex;
   }
