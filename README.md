@@ -1,4 +1,4 @@
-# 🎨 BG Remover AI
+# 🎨 Removedor de Fondos con IA JPB
 
 PWA (Progressive Web App) para **remover el fondo de imágenes con IA local**.
 Funciona en **Android** y **Windows** sin subir tus fotos a ningún servidor.
